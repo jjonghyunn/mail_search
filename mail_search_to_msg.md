@@ -16,6 +16,8 @@ GetNamespace("MAPI")
     ↓
 Stores 중 STORE_NAME(부분 일치) 선택  → team_name
     ↓
+SAVE_DIR / _processed_entry_ids.txt 로드 (있으면) → processed_ids set
+    ↓
 Inbox(받은편함) 또는 지정 폴더 진입
     ↓
 (옵션) 하위 폴더 재귀 순회
@@ -23,10 +25,19 @@ Inbox(받은편함) 또는 지정 폴더 진입
 각 메일에 대해 — Subject + (옵션) Body lowercase 결합
     ↓
 KEYWORDS 중 어느 하나라도 substring 매칭? (OR, 대소문자 무관)
-    ↓
+    ↓ 매칭 시
+EntryID 가 processed_ids 에 있으면 → skip (이미 저장된 메일)
+    ↓ 신규
 MailItem.SaveAs(path, 3)  # 3 = olMSG
+    ↓ (옵션) 첨부 저장
+Attachment.SaveAsFile(...) — 인라인 이미지는 SKIP_INLINE_IMAGES 시 제외
     ↓
-~/Downloads/mail_search_<YYMMDD>/<YYMMDD_HHMM>_<safe subject>.msg
+EntryID 를 _processed_entry_ids.txt 에 append
+    ↓
+~/Downloads/mail_search_<YYMMDD>/
+    ├─ <YYMMDD_HHMM>_<safe subject>.msg
+    ├─ <YYMMDD_HHMM>_<원본 첨부 파일명>
+    └─ _processed_entry_ids.txt    ← 재실행 시 중복 skip 마커
 ```
 
 ---
@@ -52,6 +63,22 @@ python mail_search_to_msg.py
 ```
 
 매번 키워드 바뀌면 스크립트 상단 `KEYWORDS` 리스트 수정 후 실행.
+
+---
+
+## 같은 날짜 폴더에서 키워드 바꿔가며 재실행
+
+`SAVE_DIR / _processed_entry_ids.txt` 마커 파일을 사용해 중복 저장 방지:
+
+1. 첫 실행 (`KEYWORDS=["A"]`) → 매칭 메일 저장 + 각 메일의 EntryID 마커에 기록
+2. 두번째 실행 (`KEYWORDS=["B"]`, 같은 날) → 같은 SAVE_DIR 사용
+   - A·B 둘 다 매칭하는 메일이면 EntryID 매칭 → **skip** (중복 저장 안 함)
+   - B만 매칭하는 신규 메일은 정상 저장 + EntryID 추가
+3. 결과적으로 SAVE_DIR 에는 **A∪B 의 합집합** 저장됨, 같은 메일 두 번 저장되지 않음
+
+**강제 재저장 원하면** `_processed_entry_ids.txt` 삭제 후 실행 — 처음부터 다시 시작.
+
+마커 파일 형식: 한 줄에 EntryID 하나. 일반 텍스트.
 
 ---
 
@@ -98,3 +125,4 @@ python mail_search_to_msg.py
 
 - **2026-04-30** (Jonghyun Park) — 초기 작성
 - **2026-04-30** (Jonghyun Park) — 매칭 메일의 첨부파일도 같은 폴더에 저장하도록 추가 (`SAVE_ATTACHMENTS`, `SKIP_INLINE_IMAGES` 옵션). 첨부 파일명도 `<YYMMDD_HHMM>_<원본명>` prefix로 통일.
+- **2026-04-30** (Jonghyun Park) — EntryID 기반 중복 방지 마커 (`_processed_entry_ids.txt`) 추가. 같은 날짜 폴더에서 키워드 바꿔가며 재실행 시 같은 메일 두 번 저장되지 않음.

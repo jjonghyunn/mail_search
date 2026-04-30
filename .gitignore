@@ -14,6 +14,7 @@ env/
 .DS_Store
 Thumbs.db
 
-# Output (don't commit downloaded mails)
+# Output (don't commit downloaded mails or marker)
 mail_search_*/
 *.msg
+_processed_entry_ids.txt

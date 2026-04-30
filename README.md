@@ -29,8 +29,12 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 파일 + 
    ```
    ~/Downloads/mail_search_<YYMMDD>/
      ├─ <YYMMDD_HHMM>_<safe subject>.msg
-     └─ <YYMMDD_HHMM>_<원본 첨부 파일명>
+     ├─ <YYMMDD_HHMM>_<원본 첨부 파일명>
+     └─ _processed_entry_ids.txt    ← 재실행 시 중복 skip 마커
    ```
+
+4. **같은 날짜에 키워드 바꿔서 재실행** → 같은 메일은 자동 skip (EntryID 마커 기반).
+   강제 재저장은 `_processed_entry_ids.txt` 삭제 후 실행.
 
 ## 요구사항
 
