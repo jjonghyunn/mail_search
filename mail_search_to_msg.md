@@ -51,8 +51,11 @@ EntryID 를 _processed_entry_ids.txt 에 append
 | `FOLDER_NAME` | `None` | `None`이면 받은편함(Inbox). 다른 폴더 이름(예: `"매칭 메일"`) 지정 가능 |
 | `RECURSE_SUBFOLDERS` | `False` | True면 하위 폴더까지 재귀 검색 |
 | `SEARCH_BODY` | `True` | False면 제목만 검색 (수천 개 메일 처리 시 훨씬 빠름) |
+| `WHOLE_WORD` | `True` | True면 단어 경계(`\b`) 매칭 — `"ai"`가 `email`/`available` 안에서 매칭 안 됨. False면 단순 substring (예전 동작) |
 | `SAVE_ATTACHMENTS` | `True` | 매칭 메일의 첨부파일도 같은 폴더에 저장 |
 | `SKIP_INLINE_IMAGES` | `True` | 서명·인라인 이미지(`image001.png` 등 Outlook 자동 생성 이름) 제외 |
+
+> ⚠️ **짧은 키워드 주의**: 2~3글자 영문 키워드(`ai`, `kv` 등)는 `WHOLE_WORD=True` 권장. False로 두면 `email`, `available`, `again`, `details`, `main` 등 흔한 단어 안에 substring으로 잡혀 과매칭 발생.
 
 ---
 
@@ -148,3 +151,4 @@ SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제
 - **2026-04-30** (Jonghyun Park) — 매칭 메일의 첨부파일도 같은 폴더에 저장하도록 추가 (`SAVE_ATTACHMENTS`, `SKIP_INLINE_IMAGES` 옵션). 첨부 파일명도 `<YYMMDD_HHMM>_<원본명>` prefix로 통일.
 - **2026-04-30** (Jonghyun Park) — EntryID 기반 중복 방지 마커 (`_processed_entry_ids.txt`) 추가. 같은 날짜 폴더에서 키워드 바꿔가며 재실행 시 같은 메일 두 번 저장되지 않음.
 - **2026-04-30** (Jonghyun Park) — 첨부 원본명 기반 dedup 추가. 서로 다른 메일에 같은 이름의 첨부가 들어있어도 첨부는 한 번만 저장. SAVE_DIR 의 기존 첨부 파일들에서 prefix·counter 제거하여 원본명 set 구성.
+- **2026-04-30** (Jonghyun Park) — `WHOLE_WORD` 옵션 추가 (기본 True). 짧은 키워드(`ai`, `kv` 등)가 다른 단어 안에 substring으로 잡혀 과매칭되던 문제 해결. `\b` 정규식 경계로 단어 단위 매칭.

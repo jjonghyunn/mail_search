@@ -35,8 +35,8 @@ from datetime import datetime
 # ── 설정 ────────────────────────────────────────────────────────
 # 검색할 키워드 — 제목 또는 본문에 어느 하나라도 포함되면 매칭 (OR, 대소문자 무관)
 KEYWORDS = [
-    "personal shopper kv",
-    # "법인별",
+    "just for you",
+    "ai",
     # "추가 키워드 ...",
 ]
 
@@ -51,6 +51,10 @@ RECURSE_SUBFOLDERS = False
 
 # 본문(Body)도 검색? False면 제목(Subject)만 검색 — 빠름
 SEARCH_BODY = True
+
+# 단어 단위(whole-word) 매칭? True 면 'ai'가 'email'/'available' 안에서 매칭 안 됨 (\b 경계 사용)
+# False 면 단순 substring 매칭 (이전 동작 — 짧은 키워드 시 과매칭 위험)
+WHOLE_WORD = True
 
 # 매칭 메일의 첨부파일도 같은 폴더에 저장? (.msg 파일과 같은 위치)
 SAVE_ATTACHMENTS = True
@@ -149,11 +153,30 @@ def scan_saved_attachments(save_dir: Path) -> set:
     return found
 
 
+def _compile_keyword_patterns():
+    """KEYWORDS를 매칭용 검사 함수 리스트로 변환.
+       WHOLE_WORD=True 이면 \\b 경계 regex 사용 — 'ai'가 'email' 안에서 매칭 안 됨.
+       WHOLE_WORD=False 이면 단순 substring (lowercase) 매칭.
+    """
+    checkers = []
+    for kw in KEYWORDS:
+        if WHOLE_WORD:
+            pat = re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE)
+            checkers.append(pat.search)
+        else:
+            kw_lower = kw.lower()
+            checkers.append(lambda text, k=kw_lower: k in text)
+    return checkers
+
+
+_KEYWORD_CHECKERS = _compile_keyword_patterns()
+
+
 def matches_keywords(subject: str, body: str) -> bool:
-    text = subject.lower()
+    text = subject if WHOLE_WORD else subject.lower()
     if SEARCH_BODY:
-        text += "\n" + body.lower()
-    return any(k.lower() in text for k in KEYWORDS)
+        text = text + "\n" + (body if WHOLE_WORD else body.lower())
+    return any(check(text) for check in _KEYWORD_CHECKERS)
 
 
 def iter_folders(root, recurse: bool):
@@ -183,7 +206,8 @@ def find_folder(store, folder_name: str | None):
 
 
 def main():
-    print(f"[키워드] {KEYWORDS}  (대소문자 무관, OR 매칭)")
+    print(f"[키워드] {KEYWORDS}  (OR 매칭, 대소문자 무관)")
+    print(f"[매칭 단위] {'단어 경계(\\b)' if WHOLE_WORD else 'substring'}")
     print(f"[검색 범위] 제목{' + 본문' if SEARCH_BODY else ' (본문 미검색)'}")
     print(f"[메일함] {STORE_NAME}")
     print(f"[저장]   {SAVE_DIR}")
