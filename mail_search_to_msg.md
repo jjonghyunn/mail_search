@@ -68,17 +68,38 @@ python mail_search_to_msg.py
 
 ## 같은 날짜 폴더에서 키워드 바꿔가며 재실행
 
-`SAVE_DIR / _processed_entry_ids.txt` 마커 파일을 사용해 중복 저장 방지:
+두 단계 dedup 으로 중복 저장 방지:
 
-1. 첫 실행 (`KEYWORDS=["A"]`) → 매칭 메일 저장 + 각 메일의 EntryID 마커에 기록
-2. 두번째 실행 (`KEYWORDS=["B"]`, 같은 날) → 같은 SAVE_DIR 사용
-   - A·B 둘 다 매칭하는 메일이면 EntryID 매칭 → **skip** (중복 저장 안 함)
-   - B만 매칭하는 신규 메일은 정상 저장 + EntryID 추가
-3. 결과적으로 SAVE_DIR 에는 **A∪B 의 합집합** 저장됨, 같은 메일 두 번 저장되지 않음
+### 1. 메일 dedup — `_processed_entry_ids.txt` 마커
 
-**강제 재저장 원하면** `_processed_entry_ids.txt` 삭제 후 실행 — 처음부터 다시 시작.
+처리한 메일의 Outlook EntryID를 한 줄씩 append 기록.
+재실행 시 같은 EntryID가 매칭되면 → 메일·첨부 모두 skip.
 
-마커 파일 형식: 한 줄에 EntryID 하나. 일반 텍스트.
+### 2. 첨부 dedup — 폴더 내 기존 첨부파일 스캔
+
+SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제거하여 원본명 set 구성.  
+**다른 메일**이 매칭됐어도 첨부 원본명이 set에 있으면 skip.
+
+→ "여러 메일에 같은 첨부파일이 들어있는" 경우에도 첨부는 한 번만 저장됨.
+
+### 동작 예시
+
+```
+1차 실행 (KEYWORDS=["A"]):
+  메일 X (첨부: report.xlsx) 저장 → 260415_0903_<X 제목>.msg + 260415_0903_report.xlsx
+  EntryID(X) → _processed_entry_ids.txt
+  saved_att_originals: {"report.xlsx"}
+
+2차 실행 (KEYWORDS=["B"], 같은 날):
+  메일 X (다시 매칭됨) → EntryID 매칭 → skip
+  메일 Y (첨부: report.xlsx, 같은 파일명) → EntryID 신규지만 첨부 원본명 매칭 → 첨부만 skip
+                                          → .msg는 저장됨
+  메일 Z (첨부: notes.pdf) → 둘 다 신규 → 정상 저장
+```
+
+### 강제 재저장
+
+`_processed_entry_ids.txt` 삭제 + 기존 첨부파일들 삭제 후 실행.
 
 ---
 
@@ -126,3 +147,4 @@ python mail_search_to_msg.py
 - **2026-04-30** (Jonghyun Park) — 초기 작성
 - **2026-04-30** (Jonghyun Park) — 매칭 메일의 첨부파일도 같은 폴더에 저장하도록 추가 (`SAVE_ATTACHMENTS`, `SKIP_INLINE_IMAGES` 옵션). 첨부 파일명도 `<YYMMDD_HHMM>_<원본명>` prefix로 통일.
 - **2026-04-30** (Jonghyun Park) — EntryID 기반 중복 방지 마커 (`_processed_entry_ids.txt`) 추가. 같은 날짜 폴더에서 키워드 바꿔가며 재실행 시 같은 메일 두 번 저장되지 않음.
+- **2026-04-30** (Jonghyun Park) — 첨부 원본명 기반 dedup 추가. 서로 다른 메일에 같은 이름의 첨부가 들어있어도 첨부는 한 번만 저장. SAVE_DIR 의 기존 첨부 파일들에서 prefix·counter 제거하여 원본명 set 구성.

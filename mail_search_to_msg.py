@@ -17,9 +17,10 @@ team_name 메일함에서 키워드 매칭되는 메일을 .msg + 첨부파일�
   → 같은 메일에서 나온 .msg + 첨부가 날짜 prefix로 묶여 정렬됨.
 
 같은 날짜 폴더에서 키워드 바꿔가며 재실행 가능:
-  - 처리한 메일의 EntryID를 _processed_entry_ids.txt 에 기록
-  - 재실행 시 EntryID 매칭되면 중복 저장 skip
-  - 강제 재저장 원하면 _processed_entry_ids.txt 삭제 후 실행
+  - 메일 dedup: EntryID 를 _processed_entry_ids.txt 에 기록 → 재실행 시 같은 메일 skip
+  - 첨부 dedup: SAVE_DIR 안의 기존 첨부파일명에서 원본명 추출하여 set 구성
+                → 다른 메일이 매칭됐어도 같은 원본명 첨부는 skip
+  - 강제 재저장: _processed_entry_ids.txt 삭제 + 기존 첨부파일들도 삭제 후 실행
 
 사용:
   스크립트 상단 ── 설정 ── 섹션에서 KEYWORDS 등을 바꾼 뒤 실행.
@@ -110,6 +111,44 @@ def append_processed_id(marker_path: Path, entry_id: str) -> None:
         f.write(entry_id + "\n")
 
 
+# 저장된 첨부파일에서 <YYMMDD_HHMM>_ prefix와 (N) counter suffix 제거하여 원본명 추출
+_DATE_PREFIX_PAT = re.compile(r"^\d{6}_\d{4}_(.+)$")
+_COUNTER_SUFFIX_PAT = re.compile(r" \(\d+\)$")
+
+
+def extract_attachment_original(filename: str) -> str | None:
+    """저장된 첨부 파일명에서 원본 첨부 파일명 복원.
+       '260415_0903_report (2).xlsx' → 'report.xlsx'
+       prefix 매칭 안 되면 None.
+    """
+    p = Path(filename)
+    m = _DATE_PREFIX_PAT.match(p.stem)
+    if not m:
+        return None
+    original_stem = _COUNTER_SUFFIX_PAT.sub("", m.group(1))
+    return original_stem + p.suffix
+
+
+def scan_saved_attachments(save_dir: Path) -> set:
+    """저장 폴더 내 기존 첨부파일들의 원본명 집합 (소문자) 반환.
+       .msg 파일과 marker(_*) 파일은 제외.
+    """
+    if not save_dir.exists():
+        return set()
+    found = set()
+    for f in save_dir.iterdir():
+        if not f.is_file():
+            continue
+        if f.name.startswith("_"):
+            continue
+        if f.suffix.lower() == ".msg":
+            continue
+        original = extract_attachment_original(f.name)
+        if original:
+            found.add(original.lower())
+    return found
+
+
 def matches_keywords(subject: str, body: str) -> bool:
     text = subject.lower()
     if SEARCH_BODY:
@@ -162,7 +201,8 @@ def main():
 
     # 같은 날짜 폴더에서 키워드 바꿔가며 재실행 시 중복 저장 방지
     processed_ids = load_processed_ids(PROCESSED_MARKER)
-    print(f"[중복방지] 이미 처리한 메일 {len(processed_ids):,}개 (마커: {PROCESSED_MARKER.name})")
+    saved_att_originals = scan_saved_attachments(SAVE_DIR)
+    print(f"[중복방지] 이미 처리한 메일 EntryID {len(processed_ids):,}개 / 첨부 원본명 {len(saved_att_originals):,}개")
     print()
 
     saved = 0
@@ -171,6 +211,7 @@ def main():
     failed_atts = 0
     skipped_inline = 0
     skipped_dup = 0
+    skipped_att_dup = 0
     seen_names = set()
 
     for folder in iter_folders(target_folder, RECURSE_SUBFOLDERS):
@@ -241,12 +282,19 @@ def main():
                         if SKIP_INLINE_IMAGES and _INLINE_IMG_PAT.match(att_name):
                             skipped_inline += 1
                             continue
-                        att_base = f"{date_prefix}_{safe_filename(att_name)}"
+                        # 첨부 원본명 dedup — 다른 메일에 같은 이름 첨부 있으면 skip
+                        safe_att = safe_filename(att_name)
+                        att_key = safe_att.lower()
+                        if att_key in saved_att_originals:
+                            skipped_att_dup += 1
+                            continue
+                        att_base = f"{date_prefix}_{safe_att}"
                         att_dest = unique_path(SAVE_DIR, att_base, seen_names)
                         try:
                             att.SaveAsFile(str(att_dest))
                             print(f"      [첨부] {att_dest.name}")
                             saved_atts += 1
+                            saved_att_originals.add(att_key)
                         except Exception as e:
                             print(f"      [첨부실패] {att_name} → {e}")
                             failed_atts += 1
@@ -257,9 +305,9 @@ def main():
                 append_processed_id(PROCESSED_MARKER, entry_id)
 
     print()
-    print(f"완료 — .msg {saved}개 / 첨부 {saved_atts}개 "
-          f"(인라인 skip {skipped_inline}, 중복 skip {skipped_dup}) "
-          f"/ 실패 {failed + failed_atts}개")
+    print(f"완료 — .msg {saved}개 / 첨부 {saved_atts}개")
+    print(f"  skip: 메일 EntryID 중복 {skipped_dup} / 첨부 원본명 중복 {skipped_att_dup} / 인라인 이미지 {skipped_inline}")
+    print(f"  실패: {failed + failed_atts}개")
     print(f"위치: {SAVE_DIR}")
 
 
