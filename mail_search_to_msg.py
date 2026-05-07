@@ -35,7 +35,7 @@ from datetime import datetime
 # ── 설정 ────────────────────────────────────────────────────────
 # 검색할 키워드 — 제목 또는 본문에 어느 하나라도 포함되면 매칭 (OR, 대소문자 무관)
 KEYWORDS = [
-    "google search console",
+    "product_name",
     # "ai",
     # "추가 키워드 ...",
 ]
