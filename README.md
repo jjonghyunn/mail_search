@@ -1,13 +1,15 @@
 # mail_search
 
-Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 파일 + 첨부파일로 일괄 다운로드하는 단일 파일 스크립트.
+Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다운로드하고, 받은 `.msg` 들을 한 개 마크다운 리포트로 요약하는 도구 모음.
 
 ## 파일 구성
 
 | 파일 | 설명 |
 |---|---|
-| `mail_search_to_msg.py` | 메인 스크립트 (win32com 기반, Outlook 데스크톱 앱 필요) |
-| `mail_search_to_msg.md` | 사용 가이드 (설정 변수, 동작 흐름, 출력 파일명 규칙, 트러블슈팅) |
+| `mail_search_to_msg.py` | 메일 다운로드 — Outlook 공유 메일함에서 키워드 매칭 메일을 `.msg` + 첨부로 일괄 저장 (`win32com` 기반, Outlook 앱 필요) |
+| `mail_search_to_msg.md` | 위 스크립트 사용 가이드 |
+| `summarize_msgs.py` | 받은 `.msg` 폴더를 시간순 마크다운 리포트로 요약 — 발신자 TOP / 액션 키워드 통합 / 메일별 본문 미리보기 + 액션 아이템 후보. `extract-msg` 기반, Outlook 설치 불필요 |
+| `summarize_msgs.md` | 위 스크립트 사용 가이드 |
 
 ## 빠른 시작
 
@@ -38,8 +40,15 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 파일 + 
 
 ## 요구사항
 
+`mail_search_to_msg.py` (메일 다운로드):
 - Windows + Outlook 데스크톱 앱 (실행 중 + 본인 프로필에 대상 메일함 등록)
 - Python 3.x
 - `pywin32` 패키지 (`pip install pywin32`)
 
-상세 가이드: [`mail_search_to_msg.md`](mail_search_to_msg.md)
+`summarize_msgs.py` (요약 리포트):
+- Python 3.x
+- `extract-msg` 패키지 (`pip install extract-msg`) — Outlook 설치 불필요
+
+상세 가이드:
+- 메일 다운로드: [`mail_search_to_msg.md`](mail_search_to_msg.md)
+- 요약 리포트: [`summarize_msgs.md`](summarize_msgs.md)
