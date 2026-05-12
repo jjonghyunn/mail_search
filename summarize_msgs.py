@@ -57,7 +57,7 @@ OUTPUT_BASUB_CME = "_summary"
 ACTION_KEYWORDS = [
     # 요청/부탁
     "요청", "부탁", "공유 부탁", "회신 부탁", "전달 부탁", "확인 부탁",
-    "확인 후", "확인해", "확인 바랍", "확인이 필요", "검토 부탁",
+    "확인 후", "확인해", "확인 바랍", "확인이 필요", "검토 부탁", "제외해",
     # 이슈/지연/오류
     "이슈", "문제", "오류", "지연", "딜레이", "지체", "어려움",
     # TODO/할 일
@@ -114,11 +114,32 @@ FORWARD_MARKERS = [
     re.compile(r"^-{20,}"),
 ]
 
+# 외부 메일 경고 텍스트 — Outlook/Exchange 가 외부 메일 본문 앞에 자동 삽입.
+# 본문 시작에 있으면 separator(_____) 와 같이 들어와 FORWARD_MARKERS 에 잘못 잡혀
+# 본문 전체가 cut 되는 문제 발생 → clean_body_lines 가 이 블록 먼저 skip 함.
+EXTERNAL_WARNING_RE = re.compile(
+    r"please\s+be\s+cautious|external\s+email|이\s*메일은\s*외부",
+    re.IGNORECASE,
+)
+# 본문 시작부터 N 줄 안에 외부 경고가 등장하면 그 블록 + 잇따르는 separator/빈줄을 skip
+EXTERNAL_WARNING_SCAN_LINES = 12
+
 # 파일명 prefix 에서 날짜 추출용: 260406_0933_subject.msg
 FILENAME_DATE_RE = re.compile(r"^(\d{6})_(\d{4})_")
 
 # 인용 줄(>로 시작) 제거용
 QUOTE_LINE_RE = re.compile(r"^[\s>]*>")
+
+# 한국어 사람 이름 패턴 — ACTION_KEYWORD 매칭 false positive 방지용.
+# 예: "김지연" 안의 "지연" 이 액션 키워드로 잘못 매칭 → 매칭 검사 전 line 에서
+# 이런 이름 패턴을 임시 제거함 (출력 시엔 원본 line 유지).
+#   1) 흔한 한국어 성씨 한 글자 + 이름 1~2글자 (김지연/이지연/박지연/곽지은 등 흔한 케이스)
+#   2) 한글 2-4자 + 직장 호칭 ('이형조 차장', '김권영 프로' 등)
+KOREAN_NAME_RE = re.compile(
+    r"[김이박최정조강윤장임한오서신권황안송류홍전고문양손배백허남심노유진곽우주구함변도천표명피하][가-힣]{1,2}"
+    r"|"
+    r"[가-힣]{2,4}\s*(?:차장|부장|과장|대리|매니저|프로|책임|상무|이사|팀장|선임|수석|연구원)"
+)
 
 
 def parse_msg(path: Path) -> dict:
@@ -156,11 +177,39 @@ def parse_msg(path: Path) -> dict:
         }
 
 
+def _skip_external_warning_block(lines: list[str]) -> int:
+    """본문 첫 부분에 외부 메일 경고가 있으면 그 블록 (경고 + 잇따르는 separator/빈줄) 통째로 skip.
+    진짜 본문 시작 line index 반환. 경고 없으면 0."""
+    n = len(lines)
+    if n == 0:
+        return 0
+    head_has_warning = any(
+        EXTERNAL_WARNING_RE.search(lines[i] or "")
+        for i in range(min(EXTERNAL_WARNING_SCAN_LINES, n))
+    )
+    if not head_has_warning:
+        return 0
+    i = 0
+    while i < n:
+        s = (lines[i] or "").strip()
+        if (
+            not s
+            or EXTERNAL_WARNING_RE.search(s)
+            or re.match(r"^_{5,}$|^={5,}$|^-{20,}$", s)
+        ):
+            i += 1
+            continue
+        break
+    return i
+
+
 def clean_body_lines(body: str) -> list[str]:
-    """본문을 줄 단위로 정제 — 인용·과한 공백·forwarded marker 이후 라인 제거."""
+    """본문을 줄 단위로 정제 — 인용·과한 공백·forwarded marker 이후 라인 제거.
+    본문 시작의 외부 메일 경고 + separator 블록은 forward marker 검사 전 먼저 skip."""
     lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    start = _skip_external_warning_block(lines)
     cleaned: list[str] = []
-    for raw in lines:
+    for raw in lines[start:]:
         if any(rx.match(raw.strip()) for rx in FORWARD_MARKERS):
             break  # forwarded thread 시작 — 여기서 cut
         if QUOTE_LINE_RE.match(raw):
@@ -185,13 +234,18 @@ def clean_body_lines(body: str) -> list[str]:
 
 def find_action_lines(body_lines: list[str]) -> list[tuple[str, str]]:
     """본문 줄 중 ACTION_KEYWORDS 가 포함된 줄을 (keyword, line) tuple 로 반환.
-    한 줄에 여러 키워드 매칭되면 ACTION_KEYWORDS 리스트 순서상 첫 번째만 기록."""
+    한 줄에 여러 키워드 매칭되면 ACTION_KEYWORDS 리스트 순서상 첫 번째만 기록.
+
+    매칭 검사 시 한국어 사람 이름 패턴(KOREAN_NAME_RE)은 line 에서 임시 제거 후 검사.
+    '김지연' 안의 '지연' 이 액션 키워드로 잘못 매칭되는 false positive 방지."""
     matched: list[tuple[str, str]] = []
     for line in body_lines:
         if not line:
             continue
+        # 사람 이름 제거한 sanitized line 으로 키워드 검사 (출력은 원본 line)
+        scan_line = KOREAN_NAME_RE.sub("", line).lower()
         for kw in ACTION_KEYWORDS:
-            if kw.lower() in line.lower():
+            if kw.lower() in scan_line:
                 matched.append((kw, line))
                 break
     return matched
@@ -366,6 +420,12 @@ def build_report(msgs: list[dict]) -> str:
 
 
 def main() -> int:
+    # Windows cp949 콘솔에서 unicode (↻, →, ✅) 출력 시 UnicodeEncodeError 방지
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     if not SOURCE_DIR.exists():
         print(f"❌ SOURCE_DIR 가 없습니다: {SOURCE_DIR}")
         return 1
@@ -416,20 +476,26 @@ def main() -> int:
             print(f"  ⚠️ 정리 실패: {old.name} — {e}")
 
     # keeper 가 새 이름과 다르면 rename (file ID 유지 → 링크 보존)
+    rename_log = None
     if keeper is not None and keeper.name != out_path.name:
         try:
             keeper.rename(out_path)
-            print(f"  ↻ rename: {keeper.name} → {out_path.name} (M365 파일 ID 유지)")
+            rename_log = f"  ↻ rename: {keeper.name} → {out_path.name} (M365 파일 ID 유지)"
         except OSError as e:
-            # rename 실패시 fallback — 삭제 후 새 파일 (이 경우만 링크 끊김)
-            print(f"  ⚠️ rename 실패 → 새 파일로 작성 (링크 깨질 수 있음): {e}")
+            rename_log = f"  ⚠️ rename 실패 → 새 파일로 작성 (링크 깨질 수 있음): {e}"
             try:
                 keeper.unlink()
             except OSError:
                 pass
 
-    # 내용 덮어쓰기 (파일이 새로 만들어진 경우든, rename 된 경우든)
+    # 내용 덮어쓰기 (file write 가 print 보다 우선 — print 에서 unicode 에러 나도 파일은 갱신됨)
     out_path.write_text(report, encoding="utf-8")
+
+    if rename_log:
+        try:
+            print(rename_log)
+        except UnicodeEncodeError:
+            pass
 
     print(f"\n✅ 요약 리포트 생성: {out_path}")
     print(f"   메일 {len(msgs)}건 → {out_path.stat().st_size:,} bytes")
