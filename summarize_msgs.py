@@ -129,6 +129,17 @@ FILENAME_DATE_RE = re.compile(r"^(\d{6})_(\d{4})_")
 # 인용 줄(>로 시작) 제거용
 QUOTE_LINE_RE = re.compile(r"^[\s>]*>")
 
+# 한국어 사람 이름 패턴 — ACTION_KEYWORD 매칭 false positive 방지용.
+# 예: "김지연" 안의 "지연" 이 액션 키워드로 잘못 매칭 → 매칭 검사 전 line 에서
+# 이런 이름 패턴을 임시 제거함 (출력 시엔 원본 line 유지).
+#   1) 흔한 한국어 성씨 한 글자 + 이름 1~2글자 (김지연/이지연/박지연/곽지은 등 흔한 케이스)
+#   2) 한글 2-4자 + 직장 호칭 ('이형조 차장', '김권영 프로' 등)
+KOREAN_NAME_RE = re.compile(
+    r"[김이박최정조강윤장임한오서신권황안송류홍전고문양손배백허남심노유진곽우주구함변도천표명피하][가-힣]{1,2}"
+    r"|"
+    r"[가-힣]{2,4}\s*(?:차장|부장|과장|대리|매니저|프로|책임|상무|이사|팀장|선임|수석|연구원)"
+)
+
 
 def parse_msg(path: Path) -> dict:
     """단일 .msg 파일을 dict 로 파싱."""
@@ -222,13 +233,18 @@ def clean_body_lines(body: str) -> list[str]:
 
 def find_action_lines(body_lines: list[str]) -> list[tuple[str, str]]:
     """본문 줄 중 ACTION_KEYWORDS 가 포함된 줄을 (keyword, line) tuple 로 반환.
-    한 줄에 여러 키워드 매칭되면 ACTION_KEYWORDS 리스트 순서상 첫 번째만 기록."""
+    한 줄에 여러 키워드 매칭되면 ACTION_KEYWORDS 리스트 순서상 첫 번째만 기록.
+
+    매칭 검사 시 한국어 사람 이름 패턴(KOREAN_NAME_RE)은 line 에서 임시 제거 후 검사.
+    '김지연' 안의 '지연' 이 액션 키워드로 잘못 매칭되는 false positive 방지."""
     matched: list[tuple[str, str]] = []
     for line in body_lines:
         if not line:
             continue
+        # 사람 이름 제거한 sanitized line 으로 키워드 검사 (출력은 원본 line)
+        scan_line = KOREAN_NAME_RE.sub("", line).lower()
         for kw in ACTION_KEYWORDS:
-            if kw.lower() in line.lower():
+            if kw.lower() in scan_line:
                 matched.append((kw, line))
                 break
     return matched
