@@ -113,6 +113,16 @@ FORWARD_MARKERS = [
     re.compile(r"^-{20,}"),
 ]
 
+# 외부 메일 경고 텍스트 — Outlook/Exchange 가 외부 메일 본문 앞에 자동 삽입.
+# 본문 시작에 있으면 separator(_____) 와 같이 들어와 FORWARD_MARKERS 에 잘못 잡혀
+# 본문 전체가 cut 되는 문제 발생 → clean_body_lines 가 이 블록 먼저 skip 함.
+EXTERNAL_WARNING_RE = re.compile(
+    r"please\s+be\s+cautious|external\s+email|이\s*메일은\s*외부",
+    re.IGNORECASE,
+)
+# 본문 시작부터 N 줄 안에 외부 경고가 등장하면 그 블록 + 잇따르는 separator/빈줄을 skip
+EXTERNAL_WARNING_SCAN_LINES = 12
+
 # 파일명 prefix 에서 날짜 추출용: 260406_0933_subject.msg
 FILENAME_DATE_RE = re.compile(r"^(\d{6})_(\d{4})_")
 
@@ -155,11 +165,39 @@ def parse_msg(path: Path) -> dict:
         }
 
 
+def _skip_external_warning_block(lines: list[str]) -> int:
+    """본문 첫 부분에 외부 메일 경고가 있으면 그 블록 (경고 + 잇따르는 separator/빈줄) 통째로 skip.
+    진짜 본문 시작 line index 반환. 경고 없으면 0."""
+    n = len(lines)
+    if n == 0:
+        return 0
+    head_has_warning = any(
+        EXTERNAL_WARNING_RE.search(lines[i] or "")
+        for i in range(min(EXTERNAL_WARNING_SCAN_LINES, n))
+    )
+    if not head_has_warning:
+        return 0
+    i = 0
+    while i < n:
+        s = (lines[i] or "").strip()
+        if (
+            not s
+            or EXTERNAL_WARNING_RE.search(s)
+            or re.match(r"^_{5,}$|^={5,}$|^-{20,}$", s)
+        ):
+            i += 1
+            continue
+        break
+    return i
+
+
 def clean_body_lines(body: str) -> list[str]:
-    """본문을 줄 단위로 정제 — 인용·과한 공백·forwarded marker 이후 라인 제거."""
+    """본문을 줄 단위로 정제 — 인용·과한 공백·forwarded marker 이후 라인 제거.
+    본문 시작의 외부 메일 경고 + separator 블록은 forward marker 검사 전 먼저 skip."""
     lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    start = _skip_external_warning_block(lines)
     cleaned: list[str] = []
-    for raw in lines:
+    for raw in lines[start:]:
         if any(rx.match(raw.strip()) for rx in FORWARD_MARKERS):
             break  # forwarded thread 시작 — 여기서 cut
         if QUOTE_LINE_RE.match(raw):
@@ -365,6 +403,12 @@ def build_report(msgs: list[dict]) -> str:
 
 
 def main() -> int:
+    # Windows cp949 콘솔에서 unicode (↻, →, ✅) 출력 시 UnicodeEncodeError 방지
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     if not SOURCE_DIR.exists():
         print(f"❌ SOURCE_DIR 가 없습니다: {SOURCE_DIR}")
         return 1
@@ -415,20 +459,26 @@ def main() -> int:
             print(f"  ⚠️ 정리 실패: {old.name} — {e}")
 
     # keeper 가 새 이름과 다르면 rename (file ID 유지 → 링크 보존)
+    rename_log = None
     if keeper is not None and keeper.name != out_path.name:
         try:
             keeper.rename(out_path)
-            print(f"  ↻ rename: {keeper.name} → {out_path.name} (M365 파일 ID 유지)")
+            rename_log = f"  ↻ rename: {keeper.name} → {out_path.name} (M365 파일 ID 유지)"
         except OSError as e:
-            # rename 실패시 fallback — 삭제 후 새 파일 (이 경우만 링크 끊김)
-            print(f"  ⚠️ rename 실패 → 새 파일로 작성 (링크 깨질 수 있음): {e}")
+            rename_log = f"  ⚠️ rename 실패 → 새 파일로 작성 (링크 깨질 수 있음): {e}"
             try:
                 keeper.unlink()
             except OSError:
                 pass
 
-    # 내용 덮어쓰기 (파일이 새로 만들어진 경우든, rename 된 경우든)
+    # 내용 덮어쓰기 (file write 가 print 보다 우선 — print 에서 unicode 에러 나도 파일은 갱신됨)
     out_path.write_text(report, encoding="utf-8")
+
+    if rename_log:
+        try:
+            print(rename_log)
+        except UnicodeEncodeError:
+            pass
 
     print(f"\n✅ 요약 리포트 생성: {out_path}")
     print(f"   메일 {len(msgs)}건 → {out_path.stat().st_size:,} bytes")
