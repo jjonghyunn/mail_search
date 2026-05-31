@@ -7,6 +7,7 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다�
 | 파일 | 설명 |
 |---|---|
 | `mail_search_to_msg.py` | 메일 다운로드 — Outlook 공유 메일함에서 키워드 매칭 메일을 `.msg` + 첨부로 일괄 저장 (`win32com` 기반, Outlook 앱 필요) |
+| `mail_search_to_msg_onlymsg.py` | `.msg` 파일만 저장하는 경량 버전 — 첨부파일 제외, 메일 본문/메타데이터만 필요할 때 사용 |
 | `mail_search_to_msg.md` | 위 스크립트 사용 가이드 |
 | `summarize_msgs.py` | 받은 `.msg` 폴더를 시간순 마크다운 리포트로 요약 — 발신자 TOP / 액션 키워드 통합 / 메일별 본문 미리보기 + 액션 아이템 후보. `extract-msg` 기반, Outlook 설치 불필요 |
 | `summarize_msgs.md` | 위 스크립트 사용 가이드 |
