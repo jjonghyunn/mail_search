@@ -58,6 +58,9 @@ ACTION_KEYWORDS = [
     # 요청/부탁
     "요청", "부탁", "공유 부탁", "회신 부탁", "전달 부탁", "확인 부탁",
     "확인 후", "확인해", "확인 바랍", "확인이 필요", "검토 부탁", "제외해",
+    "검토 요청", "검토 필요", "반영 부탁", "수정 부탁",
+    # 판단/문의
+    "간주", "문의", "궁금", "가능할까요", "가능한지",
     # 이슈/지연/오류
     "이슈", "문제", "오류", "지연", "딜레이", "지체", "어려움",
     # TODO/할 일
@@ -232,20 +235,24 @@ def clean_body_lines(body: str) -> list[str]:
     return cleaned
 
 
+NAME_FRAGMENT_KEYWORDS = {"지연"}  # 이름조각 오매칭 위험 키워드만 이름제거 line 으로 검사
+
+
 def find_action_lines(body_lines: list[str]) -> list[tuple[str, str]]:
     """본문 줄 중 ACTION_KEYWORDS 가 포함된 줄을 (keyword, line) tuple 로 반환.
     한 줄에 여러 키워드 매칭되면 ACTION_KEYWORDS 리스트 순서상 첫 번째만 기록.
 
-    매칭 검사 시 한국어 사람 이름 패턴(KOREAN_NAME_RE)은 line 에서 임시 제거 후 검사.
-    '김지연' 안의 '지연' 이 액션 키워드로 잘못 매칭되는 false positive 방지."""
+    NAME_FRAGMENT_KEYWORDS 만 이름제거 line 으로, 그 외는 원본 line 으로 검사
+    (이름필터 over-strip 으로 '간주'·'문의' 등이 사라지는 문제 방지)."""
     matched: list[tuple[str, str]] = []
     for line in body_lines:
         if not line:
             continue
-        # 사람 이름 제거한 sanitized line 으로 키워드 검사 (출력은 원본 line)
         scan_line = KOREAN_NAME_RE.sub("", line).lower()
+        orig_line = line.lower()
         for kw in ACTION_KEYWORDS:
-            if kw.lower() in scan_line:
+            target = scan_line if kw in NAME_FRAGMENT_KEYWORDS else orig_line
+            if kw.lower() in target:
                 matched.append((kw, line))
                 break
     return matched
