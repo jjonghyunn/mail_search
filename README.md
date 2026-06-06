@@ -41,14 +41,19 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다�
 
 ## 요구사항
 
+전체 패키지 일괄 설치:
+```bash
+pip install -r requirements.txt
+```
+
 `mail_search_to_msg.py` (메일 다운로드):
 - Windows + Outlook 데스크톱 앱 (실행 중 + 본인 프로필에 대상 메일함 등록)
 - Python 3.x
-- `pywin32` 패키지 (`pip install pywin32`)
+- `pywin32` 패키지
 
 `summarize_msgs.py` (요약 리포트):
 - Python 3.x
-- `extract-msg` 패키지 (`pip install extract-msg`) — Outlook 설치 불필요
+- `extract-msg` 패키지 — Outlook 설치 불필요
 
 상세 가이드:
 - 메일 다운로드: [`mail_search_to_msg.md`](mail_search_to_msg.md)
