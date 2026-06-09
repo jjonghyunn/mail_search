@@ -1,8 +1,7 @@
-# summarize_msgs.py — .msg 폴더 요약 리포트 생성기
+# summarize_msgs.py — .msg 폴더 요약 리포트 생성기  
+<sub>2026-06-09  Jonghyun Park w/ Claude</sub>  
 
 `mail_search_to_msg.py` 로 받은 `.msg` 파일들을 한 개의 마크다운 리포트로 정리하는 휴리스틱 기반 요약 도구.
-
-기준 문서 업데이트일: 2026-05-11
 
 ## 무엇을 하는가
 

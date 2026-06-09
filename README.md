@@ -1,4 +1,5 @@
-# mail_search
+# mail_search  
+<sub>2026-06-09  Jonghyun Park w/ Claude</sub>  
 
 Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다운로드하고, 받은 `.msg` 들을 한 개 마크다운 리포트로 요약하는 도구 모음.
 

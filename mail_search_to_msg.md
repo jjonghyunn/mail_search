@@ -1,5 +1,5 @@
-# mail_search_to_msg.py 가이드
-<!-- 2026-04-30  Jonghyun Park w/ Claude -->
+# mail_search_to_msg.py 가이드  
+<sub>2026-04-30  Jonghyun Park w/ Claude</sub>  
 
 `team_name` 메일함에서 키워드 매칭되는 메일을 `.msg` 파일 **+ 첨부파일**로 다운로드하는 스크립트.
 
