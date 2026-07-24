@@ -30,15 +30,33 @@ your_mailbox_name 메일함에서 키워드 매칭되는 메일을 .msg + 첨부
 import re
 import win32com.client
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 
 # ── 설정 ────────────────────────────────────────────────────────
-# 검색할 키워드 — 제목 또는 본문에 어느 하나라도 포함되면 매칭 (OR, 대소문자 무관)
+# 검색할 키워드 (제목/본문 대상) — 리스트 안 어느 하나라도 포함되면 매칭 (그룹 내부는 OR, 대소문자 무관)
 KEYWORDS = [
     "campaign_keyword",
     # "ai",
     # "추가 키워드 ...",
 ]
+
+# 발신자(보낸사람) 키워드 (이름/이메일 대상) — 그룹 내부는 OR. 여기 넣으면 "그 사람이 보낸 메일" 을 찾는다.
+SENDER_KEYWORDS = [
+    # "hong",              # 발신자 이름/이메일에 'hong' 포함
+    # "@example.com",
+]
+
+# 위 두 그룹(KEYWORDS=제목/본문, SENDER_KEYWORDS=발신자)을 어떻게 결합할지.
+#   "OR"  → 제목/본문 매칭  또는  발신자 매칭 (둘 중 하나만 맞아도 저장)
+#   "AND" → 제목/본문 매칭  그리고  발신자 매칭 (둘 다 맞아야 저장)
+# ※ 한쪽 그룹을 비워두면(예: SENDER_KEYWORDS=[]) MATCH_LOGIC 과 무관하게 나머지 한쪽으로만 검색.
+# ※ 값의 대소문자는 상관없음 — "or"/"OR"/"Or", "and"/"AND" 다 동일하게 인식.
+MATCH_LOGIC = "OR"
+
+# 받은 날짜가 이 날짜 이상인 메일만 처리 (그 전 옛 메일 제외).
+#   None            → 기간 제한 없음(전체)  ← 기본
+#   date(2026,1,1)  → 2026년 이후만
+RECEIVED_FROM = None
 
 # Outlook 메일함 이름 (DisplayName 부분 일치)
 STORE_NAME = "your_mailbox_name"
@@ -50,17 +68,31 @@ INCLUDE_ARCHIVE = True
 # 공용 폴더(Public Folders) store 는 검색에서 제외 (개인 mailbox 와 이름이 substring 으로 겹쳐 오매칭 방지)
 SKIP_PUBLIC_FOLDERS = True
 
-# 검색 대상 폴더 — None 이면 받은편함(Inbox)
+# ── 검색 범위 (폴더) ───────────────────────────────────────────
+# 메일함 전체(모든 폴더)를 검색?
+#   True  → store 루트부터 모든 폴더(받은편지함·보낸편지함·모든 하위폴더 등)를 뒤진다.
+#           아래 FOLDER_NAME / RECURSE_SUBFOLDERS 는 무시됨. (일정·연락처 등 비메일 항목은 자동 제외)
+#   False → 아래 FOLDER_NAME + RECURSE_SUBFOLDERS 조합으로 범위를 좁힌다. (기본)
+SEARCH_WHOLE_STORE = False
+
+# (SEARCH_WHOLE_STORE=False 일 때만 적용) 검색을 "시작"할 폴더.
+#   None       → 받은편지함(Inbox)부터
+#   "폴더이름"  → store 루트 바로 아래에서 그 이름의 폴더부터
 FOLDER_NAME = None
 
-# 하위 폴더까지 재귀 검색?
+# (SEARCH_WHOLE_STORE=False 일 때만 적용) 시작 폴더의 하위 폴더까지 내려갈지?
+#   False → 시작 폴더 "최상위만" (하위폴더는 안 봄)
+#   True  → 시작 폴더 + 그 아래 모든 하위폴더
 RECURSE_SUBFOLDERS = False
 
-# 본문(Body)도 검색? False면 제목(Subject)만 검색 — 빠름
+# ── 매칭 대상·방식 ─────────────────────────────────────────────
+# 본문(Body)도 검색? False면 제목(Subject)만 — 빠름 / True면 제목+본문
 SEARCH_BODY = True
 
-# 단어 단위(whole-word) 매칭? True 면 'ai'가 'email'/'available' 안에서 매칭 안 됨 (\b 경계 사용)
-# False 면 단순 substring 매칭 (이전 동작 — 짧은 키워드 시 과매칭 위험)
+# 단어 단위(whole-word) 매칭?
+#   True  → 단어 경계(\b) 사용. 'ai'가 'email' 안에서는 매칭 안 됨. 단 다른 글자에 붙은
+#           (예: 'abcXY') 키워드는 매칭 안 되니 주의.
+#   False → 단순 포함(substring). 붙어있는 키워드도 잡힘 (짧은 키워드 과매칭 주의).
 WHOLE_WORD = True
 
 # 매칭 메일의 첨부파일도 같은 폴더에 저장? (.msg 파일과 같은 위치)
@@ -160,13 +192,13 @@ def scan_saved_attachments(save_dir: Path) -> set:
     return found
 
 
-def _compile_keyword_patterns():
-    """KEYWORDS를 매칭용 검사 함수 리스트로 변환.
+def _compile_keyword_patterns(keywords):
+    """keywords 리스트를 매칭용 검사 함수 리스트로 변환.
        WHOLE_WORD=True 이면 \\b 경계 regex 사용 — 'ai'가 'email' 안에서 매칭 안 됨.
        WHOLE_WORD=False 이면 단순 substring (lowercase) 매칭.
     """
     checkers = []
-    for kw in KEYWORDS:
+    for kw in keywords:
         if WHOLE_WORD:
             pat = re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE)
             checkers.append(pat.search)
@@ -176,14 +208,27 @@ def _compile_keyword_patterns():
     return checkers
 
 
-_KEYWORD_CHECKERS = _compile_keyword_patterns()
+_KEYWORD_CHECKERS = _compile_keyword_patterns(KEYWORDS)          # 제목/본문 검사
+_SENDER_CHECKERS  = _compile_keyword_patterns(SENDER_KEYWORDS)   # 발신자 검사
 
 
-def matches_keywords(subject: str, body: str) -> bool:
-    text = subject if WHOLE_WORD else subject.lower()
-    if SEARCH_BODY:
-        text = text + "\n" + (body if WHOLE_WORD else body.lower())
-    return any(check(text) for check in _KEYWORD_CHECKERS)
+def _hit(checkers, text: str) -> bool:
+    t = text if WHOLE_WORD else text.lower()
+    return any(check(t) for check in checkers)
+
+
+def matches_keywords(subject: str, body: str, sender: str = "") -> bool:
+    """KEYWORDS(제목/본문) 와 SENDER_KEYWORDS(발신자) 를 MATCH_LOGIC 으로 결합해 판정.
+    - 한쪽 그룹이 비어있으면 나머지 한쪽으로만 판정 (MATCH_LOGIC 무시).
+    - MATCH_LOGIC 대소문자 무관 ('and'/'AND', 'or'/'OR')."""
+    content = subject + ("\n" + body if SEARCH_BODY else "")
+    kw_hit = _hit(_KEYWORD_CHECKERS, content) if KEYWORDS else None
+    sd_hit = _hit(_SENDER_CHECKERS, sender) if SENDER_KEYWORDS else None
+    if not SENDER_KEYWORDS:          # 발신자 조건 없음 → 제목/본문만
+        return bool(kw_hit)
+    if not KEYWORDS:                 # 제목/본문 조건 없음 → 발신자만
+        return bool(sd_hit)
+    return (kw_hit and sd_hit) if MATCH_LOGIC.strip().upper() == "AND" else (kw_hit or sd_hit)
 
 
 def iter_folders(root, recurse: bool):
@@ -237,23 +282,43 @@ def find_folder(store, folder_name: str | None):
     raise RuntimeError(f"폴더를 찾을 수 없습니다: {folder_name}")
 
 
-def _iter_all_folders(target_stores, folder_name, recurse):
-    """여러 store 의 대상 폴더(+옵션 하위)를 순차 yield — 개인 mailbox + 아카이브 통합 검색."""
-    for st in target_stores:
+def _store_search_folders(store):
+    """이 store 에서 검색할 폴더들을 yield.
+    - SEARCH_WHOLE_STORE=True → 루트부터 모든 폴더(하위 포함). 비메일 폴더(일정·연락처 등)의
+      항목은 검색 루프에서 mail.Class 로 걸러지므로 그냥 다 돌아도 안전.
+    - False → FOLDER_NAME(None=받은편지함)에서 시작 + RECURSE_SUBFOLDERS 조합."""
+    if SEARCH_WHOLE_STORE:
         try:
-            root = find_folder(st, folder_name)
+            root = store.GetRootFolder()
         except Exception as e:
-            # Inbox 없는 store (아카이브/공용폴더 일부) 는 skip
-            print(f"  ⚠ 메일함 '{getattr(st, 'DisplayName', '?')}' 폴더 열기 실패 → skip ({e})")
-            continue
+            print(f"  ⚠ 메일함 '{getattr(store, 'DisplayName', '?')}' 루트 열기 실패 → skip ({e})")
+            return
+        for f in root.Folders:
+            yield from iter_folders(f, True)   # 전체 = 항상 재귀
+    else:
+        try:
+            base = find_folder(store, FOLDER_NAME)
+        except Exception as e:
+            print(f"  ⚠ 메일함 '{getattr(store, 'DisplayName', '?')}' 폴더 열기 실패 → skip ({e})")
+            return
+        yield from iter_folders(base, RECURSE_SUBFOLDERS)
+
+
+def _iter_all_folders(target_stores, folder_name, recurse):
+    """여러 store(개인 mailbox + 아카이브)를 순회하며 검색 대상 폴더를 yield.
+    실제 폴더 선택은 _store_search_folders (SEARCH_WHOLE_STORE / FOLDER_NAME / RECURSE_SUBFOLDERS)."""
+    for st in target_stores:
         print(f"\n=== 메일함: {getattr(st, 'DisplayName', '?')} ===")
-        yield from iter_folders(root, recurse)
+        yield from _store_search_folders(st)
 
 
 def main():
-    print(f"[키워드] {KEYWORDS}  (OR 매칭, 대소문자 무관)")
-    print(f"[매칭 단위] {'단어 경계(\\b)' if WHOLE_WORD else 'substring'}")
-    print(f"[검색 범위] 제목{' + 본문' if SEARCH_BODY else ' (본문 미검색)'}")
+    print(f"[키워드] 제목/본문 {KEYWORDS}  발신자 {SENDER_KEYWORDS}  결합={MATCH_LOGIC.upper()}")
+    print(f"[매칭 단위] {'단어 경계(\\b)' if WHOLE_WORD else 'substring(포함)'}")
+    print(f"[검색 범위] 제목{' + 본문' if SEARCH_BODY else ' (본문 미검색)'}"
+          f"{' + 발신자' if SENDER_KEYWORDS else ''}"
+          f"  |  폴더: {'메일함 전체' if SEARCH_WHOLE_STORE else ('받은편지함' if FOLDER_NAME is None else FOLDER_NAME) + ('+하위' if RECURSE_SUBFOLDERS else '만')}")
+    print(f"[기간] {('받은날짜 ' + str(RECEIVED_FROM) + ' 이상') if RECEIVED_FROM else '전체'}")
     print(f"[메일함] {STORE_NAME}")
     print(f"[저장]   {SAVE_DIR}")
     print()
@@ -300,10 +365,21 @@ def main():
                     continue
                 subject = mail.Subject or ""
                 body = mail.Body if SEARCH_BODY else ""
+                # 발신자 이름 + 이메일 (SENDER_KEYWORDS 검사용)
+                sender = ""
+                if SENDER_KEYWORDS:
+                    sender = ((mail.SenderName or "") + " "
+                              + (getattr(mail, "SenderEmailAddress", "") or ""))
+                rt = mail.ReceivedTime if RECEIVED_FROM else None
             except Exception:
                 continue
 
-            if not matches_keywords(subject, body):
+            # 받은날짜 필터 — RECEIVED_FROM 이전 메일은 건너뜀 (None 이면 전체)
+            if RECEIVED_FROM and rt is not None:
+                if date(rt.year, rt.month, rt.day) < RECEIVED_FROM:
+                    continue
+
+            if not matches_keywords(subject, body, sender):
                 continue
 
             # EntryID 기반 중복 체크 — 같은 폴더에서 이미 처리한 메일이면 skip
