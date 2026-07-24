@@ -40,8 +40,12 @@ KEYWORDS = [
     # "추가 키워드 ...",
 ]
 
-# Outlook 메일함 이름 (DisplayName 부분 일치)
-STORE_NAME = "team_name"
+# Outlook 메일함 이름들 (DisplayName 부분 일치). 여러 개 박으면 다 검색.
+# 같은 메일이 여러 메일함에 동시 수신된 경우 — InternetMessageID 로 dedup 되어 한 번만 저장 (아래 참고).
+STORE_NAMES = [
+    "team_name",
+    # "your.email@example.com",
+]
 
 # 검색 대상 폴더 — None 이면 받은편함(Inbox)
 FOLDER_NAME = None
@@ -188,10 +192,64 @@ def iter_folders(root, recurse: bool):
 
 
 def find_store(ns, store_name: str):
+    """store_name 매칭 store 반환. **온라인 보관(아카이브)·공용 폴더는 skip**,
+    DisplayName **정확일치**를 substring 부분일치보다 **우선** 반환한다.
+    이유: 온라인 보관함 DisplayName 이 개인 mailbox 이메일을 통째로 포함해
+    (예: '온라인 보관 - a@b.com' vs 'a@b.com') Stores 순서상 아카이브가 먼저
+    걸려 엉뚱한 메일함(아카이브 Inbox)을 뒤지던 문제를 막는다."""
+    key = (store_name or "").lower()
+    exact = None
+    partial = None
     for store in ns.Stores:
-        if store_name.lower() in store.DisplayName.lower():
-            return store
-    return None
+        try:
+            dn = store.DisplayName or ""
+        except Exception:
+            continue
+        low = dn.lower()
+        if ("온라인 보관" in low or "archive" in low
+                or "공용 폴더" in low or "public folders" in low):
+            continue
+        if low == key:
+            if exact is None:
+                exact = store
+        elif key in low and partial is None:
+            partial = store
+    return exact or partial
+
+
+def find_stores(ns, store_names: list[str]):
+    """STORE_NAMES list 의 각 partial 매칭 store 를 순서대로 찾아 (이름, store) 튜플 list 반환.
+    매칭 안 되는 이름은 경고 출력 후 skip. dedup — 같은 store 가 여러 partial 에 매칭되면 한 번만."""
+    results: list[tuple[str, object]] = []
+    seen_ids: set[str] = set()
+    for nm in store_names:
+        s = find_store(ns, nm)
+        if s is None:
+            print(f"  ⚠️ 메일함 못 찾음 — {nm!r}  (skip)")
+            continue
+        sid = getattr(s, "StoreID", None) or s.DisplayName
+        if sid in seen_ids:
+            continue
+        seen_ids.add(sid)
+        results.append((s.DisplayName, s))
+    return results
+
+
+# Outlook 의 PR_INTERNET_MESSAGE_ID — RFC 5322 Message-ID (globally unique 메일 식별자)
+PR_INTERNET_MESSAGE_ID = "http://schemas.microsoft.com/mapi/proptag/0x1035001F"
+
+
+def get_message_id(mail) -> str | None:
+    """메일의 InternetMessageID 반환. 없거나 빈 값이면 None.
+    같은 메일이 여러 store/folder 에 있어도 동일 → store 교차 dedup 의 핵심 키."""
+    try:
+        v = mail.PropertyAccessor.GetProperty(PR_INTERNET_MESSAGE_ID)
+    except Exception:
+        return None
+    if not v:
+        return None
+    v = str(v).strip()
+    return v or None
 
 
 def find_folder(store, folder_name: str | None):
@@ -209,24 +267,27 @@ def main():
     print(f"[키워드] {KEYWORDS}  (OR 매칭, 대소문자 무관)")
     print(f"[매칭 단위] {'단어 경계(\\b)' if WHOLE_WORD else 'substring'}")
     print(f"[검색 범위] 제목{' + 본문' if SEARCH_BODY else ' (본문 미검색)'}")
-    print(f"[메일함] {STORE_NAME}")
+    print(f"[메일함] {STORE_NAMES}")
     print(f"[저장]   {SAVE_DIR}")
     print()
 
     outlook = win32com.client.Dispatch("Outlook.Application")
     ns = outlook.GetNamespace("MAPI")
 
-    target_store = find_store(ns, STORE_NAME)
-    if target_store is None:
-        raise RuntimeError(f"메일함을 찾을 수 없습니다: {STORE_NAME}")
+    stores = find_stores(ns, STORE_NAMES)
+    if not stores:
+        raise RuntimeError(f"메일함 하나도 못 찾음: {STORE_NAMES}")
+    print(f"[발견] {len(stores)} 메일함:")
+    for nm, _ in stores:
+        print(f"   - {nm}")
+    print()
 
-    target_folder = find_folder(target_store, FOLDER_NAME)
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 같은 날짜 폴더에서 키워드 바꿔가며 재실행 시 중복 저장 방지
+    # dedup 마커 — InternetMessageID (msgid:...) 우선, EntryID (entry:...) fallback, legacy prefix-less entry 도 호환
     processed_ids = load_processed_ids(PROCESSED_MARKER)
     saved_att_originals = scan_saved_attachments(SAVE_DIR)
-    print(f"[중복방지] 이미 처리한 메일 EntryID {len(processed_ids):,}개 / 첨부 원본명 {len(saved_att_originals):,}개")
+    print(f"[중복방지] 이미 처리한 메일 마커 {len(processed_ids):,}개 / 첨부 원본명 {len(saved_att_originals):,}개")
     print()
 
     saved = 0
@@ -238,99 +299,122 @@ def main():
     skipped_att_dup = 0
     seen_names = set()
 
-    for folder in iter_folders(target_folder, RECURSE_SUBFOLDERS):
-        items = folder.Items
+    for store_name, target_store in stores:
         try:
-            items.Sort("[ReceivedTime]", True)  # 최신 순
-        except Exception:
-            pass
+            target_folder = find_folder(target_store, FOLDER_NAME)
+        except Exception as e:
+            # RuntimeError (custom) + pywintypes.com_error (Public Folders 등 Inbox 없는 store) 둘 다 catch
+            print(f"[메일함 '{store_name}'] 폴더 못 찾음 — {e}  (skip)")
+            continue
+        print(f"\n=== 메일함: {store_name} ===")
 
-        total = items.Count
-        print(f"▶ 폴더 '{folder.Name}' — {total}개 검색 중...")
-
-        for idx, mail in enumerate(items, 1):
-            if idx % 500 == 0:
-                print(f"    진행 {idx}/{total} (저장 {saved}, 실패 {failed})")
+        for folder in iter_folders(target_folder, RECURSE_SUBFOLDERS):
+            items = folder.Items
             try:
-                if mail.Class != OL_CLASS_MAIL:
-                    continue
-                subject = mail.Subject or ""
-                body = mail.Body if SEARCH_BODY else ""
+                items.Sort("[ReceivedTime]", True)  # 최신 순
             except Exception:
-                continue
+                pass
 
-            if not matches_keywords(subject, body):
-                continue
+            total = items.Count
+            print(f"▶ 폴더 '{folder.Name}' — {total}개 검색 중...")
 
-            # EntryID 기반 중복 체크 — 같은 폴더에서 이미 처리한 메일이면 skip
-            try:
-                entry_id = mail.EntryID
-            except Exception:
-                entry_id = None
-            if entry_id and entry_id in processed_ids:
-                skipped_dup += 1
-                continue
-
-            # 파일명: <YYMMDD_HHMM>_<safe subject>.msg
-            try:
-                received = mail.ReceivedTime
-                date_prefix = received.strftime("%y%m%d_%H%M")
-            except Exception:
-                date_prefix = "unknown"
-
-            msg_base = f"{date_prefix}_{safe_filename(subject)}.msg"
-            dest = unique_path(SAVE_DIR, msg_base, seen_names)
-            try:
-                mail.SaveAs(str(dest), OL_SAVE_AS_MSG)
-                print(f"    [저장] {dest.name}")
-                saved += 1
-            except Exception as e:
-                print(f"    [실패] {subject[:50]} → {e}")
-                failed += 1
-                continue  # .msg 저장 실패 시 첨부도 skip + EntryID 미기록 (다음 실행에 재시도)
-
-            # 첨부파일도 같은 폴더에 <YYMMDD_HHMM>_<원본명> 으로 저장
-            if SAVE_ATTACHMENTS:
+            for idx, mail in enumerate(items, 1):
+                if idx % 500 == 0:
+                    print(f"    진행 {idx}/{total} (저장 {saved}, 실패 {failed})")
                 try:
-                    atts = mail.Attachments
+                    if mail.Class != OL_CLASS_MAIL:
+                        continue
+                    subject = mail.Subject or ""
+                    body = mail.Body if SEARCH_BODY else ""
                 except Exception:
-                    atts = None
-                if atts:
-                    for att in atts:
-                        try:
-                            att_name = att.FileName or ""
-                        except Exception:
-                            continue
-                        if not att_name:
-                            continue
-                        if SKIP_INLINE_IMAGES and _INLINE_IMG_PAT.match(att_name):
-                            skipped_inline += 1
-                            continue
-                        # 첨부 원본명 dedup — 다른 메일에 같은 이름 첨부 있으면 skip
-                        safe_att = safe_filename(att_name)
-                        att_key = safe_att.lower()
-                        if att_key in saved_att_originals:
-                            skipped_att_dup += 1
-                            continue
-                        att_base = f"{date_prefix}_{safe_att}"
-                        att_dest = unique_path(SAVE_DIR, att_base, seen_names)
-                        try:
-                            att.SaveAsFile(str(att_dest))
-                            print(f"      [첨부] {att_dest.name}")
-                            saved_atts += 1
-                            saved_att_originals.add(att_key)
-                        except Exception as e:
-                            print(f"      [첨부실패] {att_name} → {e}")
-                            failed_atts += 1
+                    continue
 
-            # .msg 저장 성공 시 EntryID 마커에 기록 (재실행 시 중복 방지)
-            if entry_id:
-                processed_ids.add(entry_id)
-                append_processed_id(PROCESSED_MARKER, entry_id)
+                if not matches_keywords(subject, body):
+                    continue
+
+                # dedup 키 추출 — Message-ID (전 store 공통) 우선, EntryID (store local) fallback
+                msg_id = get_message_id(mail)
+                try:
+                    entry_id = mail.EntryID
+                except Exception:
+                    entry_id = None
+
+                # 이미 처리한 메일? msgid / entry / legacy entry (prefix 없음) 어느 하나라도 매칭이면 skip
+                already = False
+                if msg_id and f"msgid:{msg_id}" in processed_ids:
+                    already = True
+                elif entry_id and f"entry:{entry_id}" in processed_ids:
+                    already = True
+                elif entry_id and entry_id in processed_ids:
+                    already = True   # legacy 마커 (prefix 없는 EntryID)
+                if already:
+                    skipped_dup += 1
+                    continue
+
+                # 파일명: <YYMMDD_HHMM>_<safe subject>.msg
+                try:
+                    received = mail.ReceivedTime
+                    date_prefix = received.strftime("%y%m%d_%H%M")
+                except Exception:
+                    date_prefix = "unknown"
+
+                msg_base = f"{date_prefix}_{safe_filename(subject)}.msg"
+                dest = unique_path(SAVE_DIR, msg_base, seen_names)
+                try:
+                    mail.SaveAs(str(dest), OL_SAVE_AS_MSG)
+                    print(f"    [저장] {dest.name}")
+                    saved += 1
+                except Exception as e:
+                    print(f"    [실패] {subject[:50]} → {e}")
+                    failed += 1
+                    continue  # .msg 저장 실패 시 첨부도 skip + 마커 미기록 (다음 실행에 재시도)
+
+                # 첨부파일도 같은 폴더에 <YYMMDD_HHMM>_<원본명> 으로 저장
+                if SAVE_ATTACHMENTS:
+                    try:
+                        atts = mail.Attachments
+                    except Exception:
+                        atts = None
+                    if atts:
+                        for att in atts:
+                            try:
+                                att_name = att.FileName or ""
+                            except Exception:
+                                continue
+                            if not att_name:
+                                continue
+                            if SKIP_INLINE_IMAGES and _INLINE_IMG_PAT.match(att_name):
+                                skipped_inline += 1
+                                continue
+                            # 첨부 원본명 dedup — 다른 메일에 같은 이름 첨부 있으면 skip
+                            safe_att = safe_filename(att_name)
+                            att_key = safe_att.lower()
+                            if att_key in saved_att_originals:
+                                skipped_att_dup += 1
+                                continue
+                            att_base = f"{date_prefix}_{safe_att}"
+                            att_dest = unique_path(SAVE_DIR, att_base, seen_names)
+                            try:
+                                att.SaveAsFile(str(att_dest))
+                                print(f"      [첨부] {att_dest.name}")
+                                saved_atts += 1
+                                saved_att_originals.add(att_key)
+                            except Exception as e:
+                                print(f"      [첨부실패] {att_name} → {e}")
+                                failed_atts += 1
+
+                # .msg 저장 성공 시 마커에 기록 — msgid (전 store 공통) + entry (store local fallback) 둘 다
+                for key in (
+                    f"msgid:{msg_id}" if msg_id else None,
+                    f"entry:{entry_id}" if entry_id else None,
+                ):
+                    if key and key not in processed_ids:
+                        processed_ids.add(key)
+                        append_processed_id(PROCESSED_MARKER, key)
 
     print()
     print(f"완료 — .msg {saved}개 / 첨부 {saved_atts}개")
-    print(f"  skip: 메일 EntryID 중복 {skipped_dup} / 첨부 원본명 중복 {skipped_att_dup} / 인라인 이미지 {skipped_inline}")
+    print(f"  skip: 메일 중복 (msgid/entry) {skipped_dup} / 첨부 원본명 중복 {skipped_att_dup} / 인라인 이미지 {skipped_inline}")
     print(f"  실패: {failed + failed_atts}개")
     print(f"위치: {SAVE_DIR}")
 

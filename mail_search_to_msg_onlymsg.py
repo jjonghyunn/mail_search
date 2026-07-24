@@ -188,10 +188,29 @@ def iter_folders(root, recurse: bool):
 
 
 def find_store(ns, store_name: str):
+    """store_name 매칭 store 반환. **온라인 보관(아카이브)·공용 폴더는 skip**,
+    DisplayName **정확일치**를 substring 부분일치보다 **우선** 반환한다.
+    이유: 온라인 보관함 DisplayName 이 개인 mailbox 이메일을 통째로 포함해
+    (예: '온라인 보관 - a@b.com' vs 'a@b.com') Stores 순서상 아카이브가 먼저
+    걸려 엉뚱한 메일함(아카이브 Inbox)을 뒤지던 문제를 막는다."""
+    key = (store_name or "").lower()
+    exact = None
+    partial = None
     for store in ns.Stores:
-        if store_name.lower() in store.DisplayName.lower():
-            return store
-    return None
+        try:
+            dn = store.DisplayName or ""
+        except Exception:
+            continue
+        low = dn.lower()
+        if ("온라인 보관" in low or "archive" in low
+                or "공용 폴더" in low or "public folders" in low):
+            continue
+        if low == key:
+            if exact is None:
+                exact = store
+        elif key in low and partial is None:
+            partial = store
+    return exact or partial
 
 
 def find_folder(store, folder_name: str | None):
