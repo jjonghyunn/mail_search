@@ -47,6 +47,13 @@ STORE_NAMES = [
     # "your.email@example.com",
 ]
 
+# 온라인 보관(아카이브) store 도 함께 검색? (디폴트 True — 개인 mailbox + 그 아카이브 둘 다)
+#   개인 mailbox 의 오래된 메일은 '온라인 보관 - <이메일>' 아카이브로 이동돼 있어,
+#   기본으로 아카이브까지 봐야 옛 메일이 누락되지 않는다. False 면 개인 mailbox 만.
+INCLUDE_ARCHIVE = True
+# 공용 폴더(Public Folders) store 는 검색에서 제외 (개인 mailbox 와 이름이 substring 으로 겹쳐 오매칭 방지)
+SKIP_PUBLIC_FOLDERS = True
+
 # 검색 대상 폴더 — None 이면 받은편함(Inbox)
 FOLDER_NAME = None
 
@@ -191,47 +198,54 @@ def iter_folders(root, recurse: bool):
             yield from iter_folders(sub, True)
 
 
-def find_store(ns, store_name: str):
-    """store_name 매칭 store 반환. **온라인 보관(아카이브)·공용 폴더는 skip**,
-    DisplayName **정확일치**를 substring 부분일치보다 **우선** 반환한다.
-    이유: 온라인 보관함 DisplayName 이 개인 mailbox 이메일을 통째로 포함해
-    (예: '온라인 보관 - a@b.com' vs 'a@b.com') Stores 순서상 아카이브가 먼저
-    걸려 엉뚱한 메일함(아카이브 Inbox)을 뒤지던 문제를 막는다."""
-    key = (store_name or "").lower()
-    exact = None
-    partial = None
+def _resolve_stores(ns, name: str) -> list:
+    """name(부분일치)에 매칭되는 Outlook store 들을 반환 (개인 mailbox 우선, 아카이브는 맨 뒤).
+    - SKIP_PUBLIC_FOLDERS 면 공용 폴더 store 제외
+    - INCLUDE_ARCHIVE=False 면 온라인 보관(아카이브) store 제외 → 개인 mailbox 만
+    - INCLUDE_ARCHIVE=True 면 개인 mailbox + 그 아카이브 둘 다 (온라인 보관 DisplayName 이
+      개인 mailbox 이메일을 통째로 포함하므로 같은 name 으로 둘 다 잡힌다)
+    DisplayName 정확일치 store 를 맨 앞에 둔다."""
+    key = (name or "").lower()
+    exact, mains, archives = [], [], []
     for store in ns.Stores:
         try:
             dn = store.DisplayName or ""
         except Exception:
             continue
         low = dn.lower()
-        if ("온라인 보관" in low or "archive" in low
-                or "공용 폴더" in low or "public folders" in low):
+        is_archive = ("온라인 보관" in low or "archive" in low)
+        is_public = ("공용 폴더" in low or "public folders" in low)
+        if is_public and SKIP_PUBLIC_FOLDERS:
+            continue
+        if is_archive and not INCLUDE_ARCHIVE:
+            continue
+        if key and key not in low:
             continue
         if low == key:
-            if exact is None:
-                exact = store
-        elif key in low and partial is None:
-            partial = store
-    return exact or partial
+            exact.append(store)
+        elif is_archive:
+            archives.append(store)
+        else:
+            mains.append(store)
+    return exact + mains + archives
 
 
 def find_stores(ns, store_names: list[str]):
-    """STORE_NAMES list 의 각 partial 매칭 store 를 순서대로 찾아 (이름, store) 튜플 list 반환.
-    매칭 안 되는 이름은 경고 출력 후 skip. dedup — 같은 store 가 여러 partial 에 매칭되면 한 번만."""
+    """STORE_NAMES 각 이름을 _resolve_stores 로 확장(개인 mailbox + 아카이브 포함)해
+    (DisplayName, store) 튜플 list 반환. StoreID 로 dedup — 같은 store 중복 방지."""
     results: list[tuple[str, object]] = []
     seen_ids: set[str] = set()
     for nm in store_names:
-        s = find_store(ns, nm)
-        if s is None:
+        matched = _resolve_stores(ns, nm)
+        if not matched:
             print(f"  ⚠️ 메일함 못 찾음 — {nm!r}  (skip)")
             continue
-        sid = getattr(s, "StoreID", None) or s.DisplayName
-        if sid in seen_ids:
-            continue
-        seen_ids.add(sid)
-        results.append((s.DisplayName, s))
+        for s in matched:
+            sid = getattr(s, "StoreID", None) or s.DisplayName
+            if sid in seen_ids:
+                continue
+            seen_ids.add(sid)
+            results.append((s.DisplayName, s))
     return results
 
 
