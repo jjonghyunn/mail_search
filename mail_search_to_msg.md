@@ -1,5 +1,5 @@
 # mail_search_to_msg.py 가이드  
-<sub>2026-04-30  Jonghyun Park w/ Claude</sub>  
+<sub>2026-07-28  Jonghyun Park w/ Claude</sub>  
 
 `team_name` 메일함에서 키워드 매칭되는 메일을 `.msg` 파일 **+ 첨부파일**로 다운로드하는 스크립트.
 
@@ -14,25 +14,27 @@ Outlook.Application (win32com)
     ↓
 GetNamespace("MAPI")
     ↓
-Stores 중 STORE_NAME(부분 일치) 선택  → team_name
+Stores 중 STORE_NAMES(부분 일치) 전부 선택  → team_name, (+아카이브)
     ↓
 SAVE_DIR / _processed_entry_ids.txt 로드 (있으면) → processed_ids set
     ↓
-Inbox(받은편함) 또는 지정 폴더 진입
+SEARCH_WHOLE_STORE=True → store 루트부터 전 폴더
+SEARCH_WHOLE_STORE=False → Inbox(받은편함) 또는 FOLDER_NAME 지정 폴더
     ↓
 (옵션) 하위 폴더 재귀 순회
     ↓
 각 메일에 대해 — Subject + (옵션) Body lowercase 결합
     ↓
-KEYWORDS 중 어느 하나라도 substring 매칭? (OR, 대소문자 무관)
+KEYWORDS 중 어느 하나라도 매칭? (OR, 대소문자 무관, WHOLE_WORD 시 단어경계)
     ↓ 매칭 시
-EntryID 가 processed_ids 에 있으면 → skip (이미 저장된 메일)
+msgid:<InternetMessageID> 또는 entry:<EntryID> 가 processed_ids 에 있으면
+  → skip (이미 저장된 메일)
     ↓ 신규
 MailItem.SaveAs(path, 3)  # 3 = olMSG
     ↓ (옵션) 첨부 저장
 Attachment.SaveAsFile(...) — 인라인 이미지는 SKIP_INLINE_IMAGES 시 제외
     ↓
-EntryID 를 _processed_entry_ids.txt 에 append
+msgid:/entry: 키를 _processed_entry_ids.txt 에 append
     ↓
 ~/Downloads/mail_search_<YYMMDD>/
     ├─ <YYMMDD_HHMM>_<safe subject>.msg
@@ -47,9 +49,12 @@ EntryID 를 _processed_entry_ids.txt 에 append
 | 변수 | 기본값 | 의미 |
 |---|---|---|
 | `KEYWORDS` | `["CAMPAIGN NAME"]` | 검색 키워드 리스트. 어느 하나라도 포함되면 매칭 (OR). 대소문자 무관 |
-| `STORE_NAME` | `"team_name"` | Outlook 메일함 DisplayName 부분 일치로 검색 |
-| `FOLDER_NAME` | `None` | `None`이면 받은편함(Inbox). 다른 폴더 이름(예: `"매칭 메일"`) 지정 가능 |
-| `RECURSE_SUBFOLDERS` | `False` | True면 하위 폴더까지 재귀 검색 |
+| `STORE_NAMES` | `["team_name"]` | Outlook 메일함 DisplayName **리스트** (부분 일치). 여러 개 박으면 전부 검색 — 같은 메일이 여러 메일함에 동시 수신돼도 Message-ID 로 dedup 되어 1회만 저장 |
+| `INCLUDE_ARCHIVE` | `True` | 온라인 보관(아카이브) store 도 함께 검색. 개인 mailbox 의 오래된 메일은 `온라인 보관 - <이메일>` 로 이동돼 있어 기본 True 여야 누락되지 않음 |
+| `SKIP_PUBLIC_FOLDERS` | `True` | 공용 폴더(Public Folders) store 제외 — 개인 mailbox 와 이름이 substring 으로 겹쳐 오매칭되는 것 방지 |
+| `SEARCH_WHOLE_STORE` | `False` | True면 store 루트부터 **모든 폴더**(받은편지함·보낸편지함·전 하위폴더)를 검색하고 **아래 `FOLDER_NAME`/`RECURSE_SUBFOLDERS` 는 무시됨**. 일정·연락처 등 비메일 항목은 자동 제외 |
+| `FOLDER_NAME` | `None` | (`SEARCH_WHOLE_STORE=False` 일 때만) `None`이면 받은편함(Inbox). 다른 폴더 이름(예: `"매칭 메일"`) 지정 가능 |
+| `RECURSE_SUBFOLDERS` | `False` | (`SEARCH_WHOLE_STORE=False` 일 때만) True면 시작 폴더의 하위 폴더까지 재귀 검색 |
 | `SEARCH_BODY` | `True` | False면 제목만 검색 (수천 개 메일 처리 시 훨씬 빠름) |
 | `WHOLE_WORD` | `True` | True면 단어 경계(`\b`) 매칭 — `"ai"`가 `email`/`available` 안에서 매칭 안 됨. False면 단순 substring (예전 동작) |
 | `SAVE_ATTACHMENTS` | `True` | 매칭 메일의 첨부파일도 같은 폴더에 저장 |
@@ -75,8 +80,17 @@ python mail_search_to_msg.py
 
 ### 1. 메일 dedup — `_processed_entry_ids.txt` 마커
 
-처리한 메일의 Outlook EntryID를 한 줄씩 append 기록.
-재실행 시 같은 EntryID가 매칭되면 → 메일·첨부 모두 skip.
+처리한 메일의 식별 키를 한 줄씩 append 기록. 재실행 시 같은 키가 매칭되면 → 메일·첨부 모두 skip.
+
+키는 **3단 구조**로 기록·조회된다:
+
+| 우선순위 | 키 형식 | 성격 |
+|---|---|---|
+| 1 | `msgid:<InternetMessageID>` | **store 교차 공통** — 같은 메일이 여러 메일함(개인 + 공유 + 아카이브)에 동시 수신돼도 값이 동일 |
+| 2 | `entry:<EntryID>` | store local fallback — Message-ID 가 없는 메일(내부 발신 등)용 |
+| 3 | prefix 없는 EntryID | legacy 호환 — 이 기능 이전에 만들어진 옛 마커 파일도 그대로 인식 |
+
+`STORE_NAMES` 에 여러 메일함을 넣거나 `INCLUDE_ARCHIVE=True` 로 아카이브까지 볼 때, **같은 메일이 중복 저장되지 않게 하는 핵심**이 1번 키다. (EntryID 는 store 마다 달라서 이 경우 dedup 이 안 됨)
 
 ### 2. 첨부 dedup — 폴더 내 기존 첨부파일 스캔
 
@@ -90,11 +104,11 @@ SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제
 ```
 1차 실행 (KEYWORDS=["A"]):
   메일 X (첨부: report.xlsx) 저장 → 260415_0903_<X 제목>.msg + 260415_0903_report.xlsx
-  EntryID(X) → _processed_entry_ids.txt
+  msgid:<X의 Message-ID> + entry:<X의 EntryID> → _processed_entry_ids.txt
   saved_att_originals: {"report.xlsx"}
 
 2차 실행 (KEYWORDS=["B"], 같은 날):
-  메일 X (다시 매칭됨) → EntryID 매칭 → skip
+  메일 X (다시 매칭됨) → msgid 매칭 → skip
   메일 Y (첨부: report.xlsx, 같은 파일명) → EntryID 신규지만 첨부 원본명 매칭 → 첨부만 skip
                                           → .msg는 저장됨
   메일 Z (첨부: notes.pdf) → 둘 다 신규 → 정상 저장
@@ -135,7 +149,7 @@ SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제
 | 항목 | 내용 |
 |---|---|
 | Outlook 실행 필요 | `win32com.client.Dispatch("Outlook.Application")` — Outlook 데스크톱 앱 설치/로그인 상태여야 함 |
-| 메일함 권한 | `team_name` 가 본인 Outlook 프로필에 등록돼 있어야 `Stores`에서 찾힘 |
+| 메일함 권한 | `STORE_NAMES` 의 각 이름이 본인 Outlook 프로필에 등록돼 있어야 `Stores`에서 찾힘 |
 | 본문 인코딩 | `mail.Body`는 plain text. HTMLBody가 필요하면 별도 처리 |
 | `.msg` 포맷 | Outlook 기본 메일 저장 포맷. 다른 OS / 클라이언트에선 열기 제한적 |
 | 매칭 0개 | 폴더만 만들고 종료 (저장 0개) — 키워드 / 폴더 / 메일함 명 재확인 |
@@ -152,3 +166,6 @@ SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제
 - **2026-04-30** (Jonghyun Park) — EntryID 기반 중복 방지 마커 (`_processed_entry_ids.txt`) 추가. 같은 날짜 폴더에서 키워드 바꿔가며 재실행 시 같은 메일 두 번 저장되지 않음.
 - **2026-04-30** (Jonghyun Park) — 첨부 원본명 기반 dedup 추가. 서로 다른 메일에 같은 이름의 첨부가 들어있어도 첨부는 한 번만 저장. SAVE_DIR 의 기존 첨부 파일들에서 prefix·counter 제거하여 원본명 set 구성.
 - **2026-04-30** (Jonghyun Park) — `WHOLE_WORD` 옵션 추가 (기본 True). 짧은 키워드(`ai`, `kv` 등)가 다른 단어 안에 substring으로 잡혀 과매칭되던 문제 해결. `\b` 정규식 경계로 단어 단위 매칭.
+- **2026-07-28** (Jonghyun Park) — `STORE_NAME`(문자열) → **`STORE_NAMES`(리스트)** 로 변경. 여러 메일함을 한 번에 검색. `INCLUDE_ARCHIVE`(기본 True, 온라인 보관 store 포함) · `SKIP_PUBLIC_FOLDERS`(기본 True) 옵션 추가.
+- **2026-07-28** (Jonghyun Park) — dedup 키를 **InternetMessageID(`msgid:`) 우선 / EntryID(`entry:`) fallback / prefix 없는 legacy EntryID 호환** 3단 구조로 확장. EntryID 는 store 마다 달라서, 같은 메일이 여러 메일함에 동시 수신되면 중복 저장되던 문제 해결.
+- **2026-07-28** (Jonghyun Park) — `SEARCH_WHOLE_STORE` 옵션 추가 (기본 False). True 면 store 루트부터 전 폴더를 검색하고 `FOLDER_NAME`/`RECURSE_SUBFOLDERS` 는 무시됨.

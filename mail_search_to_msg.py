@@ -1,8 +1,8 @@
 """
 mail_search_to_msg.py
-2026-04-30  Jonghyun Park w/ Claude
+2026-07-28  Jonghyun Park w/ Claude
 
-team_name 메일함에서 키워드 매칭되는 메일을 .msg + 첨부파일로 다운로드.
+STORE_NAMES 에 지정한 메일함(들)에서 키워드 매칭되는 메일을 .msg + 첨부파일로 다운로드.
 
 검색 대상:
   - 제목(Subject) 또는 본문(Body) 부분일치 (대소문자 무관)
@@ -17,7 +17,9 @@ team_name 메일함에서 키워드 매칭되는 메일을 .msg + 첨부파일�
   → 같은 메일에서 나온 .msg + 첨부가 날짜 prefix로 묶여 정렬됨.
 
 같은 날짜 폴더에서 키워드 바꿔가며 재실행 가능:
-  - 메일 dedup: EntryID 를 _processed_entry_ids.txt 에 기록 → 재실행 시 같은 메일 skip
+  - 메일 dedup: InternetMessageID(msgid:) 우선 / EntryID(entry:) fallback 을
+                _processed_entry_ids.txt 에 기록 → 재실행 시 같은 메일 skip.
+                msgid 는 store 교차 공통이라 여러 메일함·아카이브를 함께 봐도 중복 저장 안 됨
   - 첨부 dedup: SAVE_DIR 안의 기존 첨부파일명에서 원본명 추출하여 set 구성
                 → 다른 메일이 매칭됐어도 같은 원본명 첨부는 skip
   - 강제 재저장: _processed_entry_ids.txt 삭제 + 기존 첨부파일들도 삭제 후 실행

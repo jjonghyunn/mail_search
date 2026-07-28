@@ -1,5 +1,5 @@
 # mail_search  
-<sub>2026-06-09  Jonghyun Park w/ Claude</sub>  
+<sub>2026-07-28  Jonghyun Park w/ Claude</sub>  
 
 Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다운로드하고, 받은 `.msg` 들을 한 개 마크다운 리포트로 요약하는 도구 모음.
 
@@ -8,7 +8,7 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다�
 | 파일 | 설명 |
 |---|---|
 | `mail_search_to_msg.py` | 메일 다운로드 — Outlook 공유 메일함에서 키워드 매칭 메일을 `.msg` + 첨부로 일괄 저장 (`win32com` 기반, Outlook 앱 필요) |
-| `mail_search_to_msg_onlymsg.py` | `.msg` 파일만 저장하는 경량 버전 — 첨부파일 제외, 메일 본문/메타데이터만 필요할 때 사용 |
+| `mail_search_to_msg_onlymsg.py` | `.msg` 파일만 저장하는 경량 버전 — 첨부파일 제외, 메일 본문/메타데이터만 필요할 때 사용. ⚠️ 설정 스키마가 본편과 조금 다름 — 메일함 지정이 `STORE_NAME`(문자열 1개)이라 여러 메일함 동시 검색은 안 됨 |
 | `mail_search_to_msg.md` | 위 스크립트 사용 가이드 |
 | `summarize_msgs.py` | 받은 `.msg` 폴더를 시간순 마크다운 리포트로 요약 — 발신자 TOP / 액션 키워드 통합 / 메일별 본문 미리보기 + 액션 아이템 후보. `extract-msg` 기반, Outlook 설치 불필요 |
 | `summarize_msgs.md` | 위 스크립트 사용 가이드 |
@@ -17,7 +17,10 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다�
 
 1. 스크립트 상단 `── 설정 ──` 섹션에서:
    - `KEYWORDS` — 검색할 단어 리스트 (제목/본문 OR 매칭, 대소문자 무관)
-   - `STORE_NAME` — Outlook DisplayName 부분 일치 (공유 메일함 이름)
+   - `WHOLE_WORD` — 단어 경계(`\b`) 매칭 여부. **기본 True 로 두는 것을 권장** — False 면 `ai`·`kv` 같은 2~3글자 키워드가 `email`/`available` 안에 substring 으로 잡혀 과매칭됨
+   - `STORE_NAMES` — Outlook DisplayName 부분 일치 **리스트** (여러 메일함 동시 검색 가능)
+   - `INCLUDE_ARCHIVE` — 온라인 보관(아카이브) store 도 검색 (기본 True — 옛 메일 누락 방지)
+   - `SEARCH_WHOLE_STORE` — True 면 store 전 폴더 검색, 아래 두 항목은 무시됨 (기본 False)
    - `FOLDER_NAME` — `None` 이면 받은편함, 다른 폴더 이름 입력 가능
    - `RECURSE_SUBFOLDERS` — 하위 폴더까지 재귀 검색 여부
    - `SEARCH_BODY` — 본문 검색 ON/OFF (대량 메일함이면 OFF 권장)
@@ -37,7 +40,8 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다�
      └─ _processed_entry_ids.txt    ← 재실행 시 중복 skip 마커
    ```
 
-4. **같은 날짜에 키워드 바꿔서 재실행** → 같은 메일은 자동 skip (EntryID 마커 기반).
+4. **같은 날짜에 키워드 바꿔서 재실행** → 같은 메일은 자동 skip (Message-ID 우선 / EntryID fallback 마커 기반).
+   여러 메일함·아카이브를 동시에 봐도 같은 메일은 한 번만 저장됨.
    강제 재저장은 `_processed_entry_ids.txt` 삭제 후 실행.
 
 ## 요구사항

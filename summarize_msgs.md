@@ -1,5 +1,5 @@
 # summarize_msgs.py — .msg 폴더 요약 리포트 생성기  
-<sub>2026-06-09  Jonghyun Park w/ Claude</sub>  
+<sub>2026-07-28  Jonghyun Park w/ Claude</sub>  
 
 `mail_search_to_msg.py` 로 받은 `.msg` 파일들을 한 개의 마크다운 리포트로 정리하는 휴리스틱 기반 요약 도구.
 
@@ -36,9 +36,9 @@ python summarize_msgs.py
 | 상수 | 기본값 | 의미 |
 |---|---|---|
 | `SOURCE_DIR` | `C:\Users\user_name\Downloads\mail_search_260511` | 파싱할 `.msg` 폴더 |
-| `OUTPUT_DIR` | `__file__.parent` | 리포트 저장 위치 (스크립트 폴더) |
-| `OUTPUT_BASUB_CME` | `summary` | 출력 파일명 base (`summary_YYMMDD_HHMM.md` 형태로 저장) |
-| `ACTION_KEYWORDS` | 23개 (한/영 혼합) | 이 키워드가 들어있는 줄을 액션 아이템 후보로 추출 |
+| `OUTPUT_DIR` | `None` | 리포트 저장 위치. `None` 이면 **`SOURCE_DIR` 안**(분석한 `.msg` 들과 같은 폴더)에 저장 — 추천. 별도 경로를 박으면 거기에 저장 |
+| `OUTPUT_BASUB_CME` | `_summary` | 출력 파일명 base (`_summary_YYMMDD_HHMM.md` 형태로 저장). 언더바 prefix 는 파일 매니저에서 영문보다 앞에 정렬돼 **폴더 맨 위로 올라오게** 하려는 의도 |
+| `ACTION_KEYWORDS` | 44개 (한/영 혼합) | 이 키워드가 들어있는 줄을 액션 아이템 후보로 추출 |
 | `BODY_PREVIEW_LINES` | 25 | 본문 미리보기 최대 줄 수 |
 | `MAX_LINE_LENGTH` | 200 | 너무 긴 한 줄은 잘라서 표시 |
 | `TOP_SENDERS` | 10 | 통계 섹션 발신자 TOP 개수 |
@@ -60,10 +60,16 @@ python summarize_msgs.py
 ## 결과 파일 예
 
 ```
-summary_260511_1735.md
+<SOURCE_DIR>/_summary_260511_1735.md
 ```
 
-폴더에 같은 prefix(`summary_*.md`)가 늘어나도 timestamp suffix 로 구분됨. 옛 리포트는 수동으로 정리.
+**리포트는 항상 1개만 유지된다** — 실행할 때마다 누적되지 않음:
+
+1. 폴더의 기존 `_summary_*.md` 중 **가장 최근 1개를 keeper 로 남기고**, 나머지 잔재는 자동 삭제 (`- 정리: <파일명>` 로그 출력)
+2. keeper 를 새 timestamp 이름으로 **rename 한 뒤 내용만 덮어씀**
+   → **OneDrive/M365 file ID 가 유지**되므로 이전에 공유한 링크가 그대로 살아있음
+
+따라서 리포트 링크를 팀에 한 번 공유해두면, 이후 재실행해도 같은 링크로 최신 내용이 보인다.
 
 ## 키워드 추가/수정
 
