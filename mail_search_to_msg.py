@@ -1,6 +1,7 @@
 """
 mail_search_to_msg.py
 2026-07-28  Jonghyun Park w/ Claude
+updated: 2026-07-29 19:33  — f-string 내 백슬래시 제거 (Python 3.11 이하 SyntaxError 호환성 수정)
 
 STORE_NAMES 에 지정한 메일함(들)에서 키워드 매칭되는 메일을 .msg + 첨부파일로 다운로드.
 
@@ -348,7 +349,8 @@ def _store_search_folders(store):
 
 def main():
     print(f"[키워드] 제목/본문 {KEYWORDS}  발신자 {SENDER_KEYWORDS}  결합={MATCH_LOGIC.upper()}")
-    print(f"[매칭 단위] {'단어 경계(\\b)' if WHOLE_WORD else 'substring(포함)'}")
+    match_unit = "단어 경계(\\b)" if WHOLE_WORD else "substring(포함)"
+    print(f"[매칭 단위] {match_unit}")
     print(f"[검색 범위] 제목{' + 본문' if SEARCH_BODY else ' (본문 미검색)'}"
           f"{' + 발신자' if SENDER_KEYWORDS else ''}"
           f"  |  폴더: {'메일함 전체' if SEARCH_WHOLE_STORE else ('받은편지함' if FOLDER_NAME is None else FOLDER_NAME) + ('+하위' if RECURSE_SUBFOLDERS else '만')}")
