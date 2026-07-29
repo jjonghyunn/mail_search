@@ -1,5 +1,5 @@
 # summarize_msgs.py — .msg 폴더 요약 리포트 생성기  
-<sub>2026-07-28  Jonghyun Park w/ Claude</sub>  
+<sub>2026-07-29  Jonghyun Park w/ Claude</sub>  
 
 `mail_search_to_msg.py` 로 받은 `.msg` 파일들을 한 개의 마크다운 리포트로 정리하는 휴리스틱 기반 요약 도구.
 
@@ -39,6 +39,8 @@ python summarize_msgs.py
 | `OUTPUT_DIR` | `None` | 리포트 저장 위치. `None` 이면 **`SOURCE_DIR` 안**(분석한 `.msg` 들과 같은 폴더)에 저장 — 추천. 별도 경로를 박으면 거기에 저장 |
 | `OUTPUT_BASUB_CME` | `_summary` | 출력 파일명 base (`_summary_YYMMDD_HHMM.md` 형태로 저장). 언더바 prefix 는 파일 매니저에서 영문보다 앞에 정렬돼 **폴더 맨 위로 올라오게** 하려는 의도 |
 | `ACTION_KEYWORDS` | 44개 (한/영 혼합) | 이 키워드가 들어있는 줄을 액션 아이템 후보로 추출 |
+| `NAME_FRAGMENT_KEYWORDS` | `{"지연"}` | 한국어 사람 이름의 조각으로 흔히 오탐되는 액션 키워드. 이름 안에서 나온 경우 액션으로 안 셈 (예: `김지연` 의 `지연`) |
+| `EXTERNAL_WARNING_SCAN_LINES` | 12 | 본문 앞 몇 줄까지 외부 메일 경고 블록을 찾을지 |
 | `BODY_PREVIEW_LINES` | 25 | 본문 미리보기 최대 줄 수 |
 | `MAX_LINE_LENGTH` | 200 | 너무 긴 한 줄은 잘라서 표시 |
 | `TOP_SENDERS` | 10 | 통계 섹션 발신자 TOP 개수 |
@@ -49,11 +51,15 @@ python summarize_msgs.py
 각 메일 본문은 아래 순서로 손질됨:
 
 1. 줄 단위 split (`\r\n`/`\r`/`\n` 통일)
-2. **Forwarded thread 절단점** 만나면 그 이후 버림
+2. **외부 메일 경고 블록 skip** — Outlook/Exchange 가 외부 메일 본문 앞에 자동 삽입하는 경고문(`please be cautious` / `external email` / `이 메일은 외부…`)을 본문 앞 `EXTERNAL_WARNING_SCAN_LINES` 줄(기본 12) 안에서 찾아 건너뜀.
+   이 경고문은 구분선(`_____`)과 같이 들어와 아래 3번의 절단점으로 **오인되어 본문 전체가 잘리는** 문제가 있어서 먼저 처리한다.
+3. **Forwarded thread 절단점** 만나면 그 이후 버림
    - `보낸 사람:`, `From:`, `발신:`, `--- Original Message ---`, `____...`, `====...`, `------...` 등
-3. **인용 줄(`>`)** 제거
-4. **연속 빈 줄** 1개로 압축
-5. **너무 긴 줄**은 `MAX_LINE_LENGTH` 에서 잘라 `…` 부착
+4. **인용 줄(`>`)** 제거
+5. **연속 빈 줄** 1개로 압축
+6. **너무 긴 줄**은 `MAX_LINE_LENGTH` 에서 잘라 `…` 부착
+
+액션 키워드 매칭 직전에는 **한국어 이름 오탐 억제**가 한 번 더 들어간다 — `KOREAN_NAME_RE`(성씨 + 이름, 또는 이름 + 직급어 `차장`/`부장`/`매니저`…) 로 사람 이름을 먼저 걷어낸 뒤, `NAME_FRAGMENT_KEYWORDS`(기본 `{"지연"}`) 에 든 단어가 그 이름 조각이었으면 액션으로 세지 않는다. (예: `김지연` 의 `지연` 이 "지연(delay)" 액션으로 잡히던 문제)
 
 → 결과적으로 "이 메일에서 새로 작성한 본문" 만 남는다 (덧붙은 회신 체인은 안 보임).
 
@@ -91,6 +97,7 @@ ACTION_KEYWORDS = [
 - **Forward marker 못 잡는 케이스** — 회신 본문 형식이 특이하면 전체 본문이 미리보기로 들어옴. `FORWARD_MARKERS` 패턴에 정규식 추가하면 됨.
 - **본문 외 정보 부족** — 첨부파일 내용은 안 봄. 일정 엑셀 안의 셀 값까지 보려면 별도 처리 필요.
 - **요청/지시 톤 구별 안 함** — "확인 부탁드립니다" 도 "이미 확인했습니다" 도 둘 다 `확인` 키워드로 잡힘. 진짜 액션이 필요한 줄만 보고 싶으면 결과 MD 에서 한 번 더 눈으로 필터.
+  (예외적으로 **한국어 사람 이름 오탐만** `KOREAN_NAME_RE` + `NAME_FRAGMENT_KEYWORDS` 로 걸러진다 — 위 "본문 정제" 참고. 그 외 톤 판별은 없음.)
 
 ## 향후 확장 아이디어
 

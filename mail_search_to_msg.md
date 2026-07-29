@@ -1,5 +1,5 @@
 # mail_search_to_msg.py 가이드  
-<sub>2026-07-28  Jonghyun Park w/ Claude</sub>  
+<sub>2026-07-29  Jonghyun Park w/ Claude</sub>  
 
 `team_name` 메일함에서 키워드 매칭되는 메일을 `.msg` 파일 **+ 첨부파일**로 다운로드하는 스크립트.
 
@@ -23,9 +23,14 @@ SEARCH_WHOLE_STORE=False → Inbox(받은편함) 또는 FOLDER_NAME 지정 폴�
     ↓
 (옵션) 하위 폴더 재귀 순회
     ↓
-각 메일에 대해 — Subject + (옵션) Body lowercase 결합
+각 메일에 대해 — RECEIVED_FROM 이 있으면 받은 날짜가 그 이상인지 먼저 확인
+    ↓ 통과
+[그룹 A] Subject + (옵션) Body lowercase 결합 → KEYWORDS 중 하나라도 매칭?
+[그룹 B] 발신자 이름 + 이메일          → SENDER_KEYWORDS 중 하나라도 매칭?
+  (각 그룹 내부는 OR, 대소문자 무관, WHOLE_WORD 시 단어경계)
     ↓
-KEYWORDS 중 어느 하나라도 매칭? (OR, 대소문자 무관, WHOLE_WORD 시 단어경계)
+두 그룹을 MATCH_LOGIC 으로 결합 — "OR" = 둘 중 하나, "AND" = 둘 다
+  ※ 한쪽 그룹이 비어 있으면 MATCH_LOGIC 무관하게 나머지 한쪽으로만 판정
     ↓ 매칭 시
 msgid:<InternetMessageID> 또는 entry:<EntryID> 가 processed_ids 에 있으면
   → skip (이미 저장된 메일)
@@ -48,7 +53,10 @@ msgid:/entry: 키를 _processed_entry_ids.txt 에 append
 
 | 변수 | 기본값 | 의미 |
 |---|---|---|
-| `KEYWORDS` | `["CAMPAIGN NAME"]` | 검색 키워드 리스트. 어느 하나라도 포함되면 매칭 (OR). 대소문자 무관 |
+| `KEYWORDS` | `["campaign_name"]` | **제목/본문** 검색 키워드 리스트. 어느 하나라도 포함되면 매칭 (OR). 대소문자 무관 |
+| `SENDER_KEYWORDS` | `[]` | **발신자**(이름/이메일) 검색 키워드 리스트 (OR). 예: `["hong", "@example.com"]` → 그 사람이 보낸 메일. 비워두면 발신자 조건 미적용 |
+| `MATCH_LOGIC` | `"OR"` | 위 두 그룹의 결합 방식. `"OR"` = 제목/본문 **또는** 발신자, `"AND"` = 둘 다. 값의 대소문자 무관. 한쪽 그룹이 비어 있으면 무시됨 |
+| `RECEIVED_FROM` | `None` | 받은 날짜 하한. `None` = 기간 제한 없음. `date(2026,1,1)` 처럼 주면 그 이후 메일만 처리 |
 | `STORE_NAMES` | `["team_name"]` | Outlook 메일함 DisplayName **리스트** (부분 일치). 여러 개 박으면 전부 검색 — 같은 메일이 여러 메일함에 동시 수신돼도 Message-ID 로 dedup 되어 1회만 저장 |
 | `INCLUDE_ARCHIVE` | `True` | 온라인 보관(아카이브) store 도 함께 검색. 개인 mailbox 의 오래된 메일은 `온라인 보관 - <이메일>` 로 이동돼 있어 기본 True 여야 누락되지 않음 |
 | `SKIP_PUBLIC_FOLDERS` | `True` | 공용 폴더(Public Folders) store 제외 — 개인 mailbox 와 이름이 substring 으로 겹쳐 오매칭되는 것 방지 |
@@ -169,3 +177,4 @@ SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제
 - **2026-07-28** (Jonghyun Park) — `STORE_NAME`(문자열) → **`STORE_NAMES`(리스트)** 로 변경. 여러 메일함을 한 번에 검색. `INCLUDE_ARCHIVE`(기본 True, 온라인 보관 store 포함) · `SKIP_PUBLIC_FOLDERS`(기본 True) 옵션 추가.
 - **2026-07-28** (Jonghyun Park) — dedup 키를 **InternetMessageID(`msgid:`) 우선 / EntryID(`entry:`) fallback / prefix 없는 legacy EntryID 호환** 3단 구조로 확장. EntryID 는 store 마다 달라서, 같은 메일이 여러 메일함에 동시 수신되면 중복 저장되던 문제 해결.
 - **2026-07-28** (Jonghyun Park) — `SEARCH_WHOLE_STORE` 옵션 추가 (기본 False). True 면 store 루트부터 전 폴더를 검색하고 `FOLDER_NAME`/`RECURSE_SUBFOLDERS` 는 무시됨.
+- **2026-07-29** (Jonghyun Park) — **발신자 매칭 추가** — `SENDER_KEYWORDS`(발신자 이름/이메일 대상) + `MATCH_LOGIC`(제목·본문 그룹과 `"OR"`/`"AND"` 결합). "그 사람이 보낸 메일" 검색이 가능해짐. 함께 `RECEIVED_FROM`(받은 날짜 하한, 기본 `None`) 추가. 문서의 설정 표·동작 흐름을 이 3개 상수 기준으로 갱신.
