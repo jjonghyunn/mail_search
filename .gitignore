@@ -18,3 +18,10 @@ Thumbs.db
 mail_search_*/
 *.msg
 _processed_entry_ids.txt
+
+# 실행 산출물 xlsx (타임스탬프 붙은 것) — 커밋 금지
+*_2[0-9][0-9][0-9][0-9][0-9][0-9].xlsx
+*_2[0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9].xlsx
+
+# 예외 — 손으로 만든 예시 워크북 (타임스탬프 없음 = 수작업 예시 식별 표식)
+!schedule_automation/26_Schedule(Auto)_example.xlsx

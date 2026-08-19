@@ -79,14 +79,16 @@ python check_mail_attachment_byname.py
 ```
 
 무인 실행은 작업 스케줄러에 `pythonw.exe` 로 등록한다 (창이 뜨지 않는다).
-등록 명령어 예시는 [`data-preprocessing`](https://github.com/jjonghyunn/data-preprocessing) repo 의
-`260324_schedule/create_schtasks_v2.txt` 에 실행 시각 배치와 함께 정리돼 있다.
+등록 명령어 예시는 같은 폴더의 [`create_schtasks_v2.txt`](create_schtasks_v2.txt) 에
+실행 시각 배치와 함께 정리돼 있다.
 
 ## 받은 파일을 쓰는 쪽
 
-내려받은 일정 파일을 리포트 워크북에 반영하는 도구(`update_schedule*.py`)는
-[`data-preprocessing/260324_schedule/`](https://github.com/jjonghyunn/data-preprocessing/tree/main/260324_schedule)
-에 있다. 이 스크립트가 붙이는 `_YYMMDD_HHMM` 접미사를 그쪽 최신 파일 판별이 그대로 읽는다.
+내려받은 일정 파일을 리포트 워크북에 반영하는 도구는 같은 폴더의
+[`update_schedule_summary.py`](update_schedule_summary.py) 다.
+이 스크립트가 붙이는 `_YYMMDD_HHMM` 접미사를 그쪽 최신 파일 판별이 그대로 읽는다.
+
+요약 정제 단계가 없는 앞 세대 `update_schedule.py` 는 [`data-preprocessing`](https://github.com/jjonghyunn/data-preprocessing/tree/main/260324_schedule) 에 있다.
 
 ## 의존성
 
