@@ -1,7 +1,8 @@
 # mail_search  
-<sub>2026-07-29  Jonghyun Park w/ Claude</sub>  
+<sub>2026-08-19  Jonghyun Park w/ Claude</sub>  
 
 Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다운로드하고, 받은 `.msg` 들을 한 개 마크다운 리포트로 요약하는 도구 모음.
+메일함을 계속 지켜보며 조건에 맞는 **첨부파일만 자동으로 내려받는** 감시 스크립트도 함께 둔다.
 
 ## 파일 구성
 
@@ -12,6 +13,10 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다�
 | `mail_search_to_msg.md` | 위 스크립트 사용 가이드 |
 | `summarize_msgs.py` | 받은 `.msg` 폴더를 시간순 마크다운 리포트로 요약 — 발신자 TOP / 액션 키워드 통합 / 메일별 본문 미리보기 + 액션 아이템 후보. `extract-msg` 기반, Outlook 설치 불필요 |
 | `summarize_msgs.md` | 위 스크립트 사용 가이드 |
+| `check_mail_attachment_byname.py` | 첨부 감시 — **첨부파일명** 키워드로 감지, 수신일 이후만 (`win32com`) |
+| `check_mail_attachment_status.py` | 위와 같되 처리 이력 마커를 **저장 폴더 안**에 둠 (폴더 통째 이동에 강함) |
+| `check_mail_attachment_url.py` | **메일 제목 + 첨부파일명 2중 조건** + 수신 기간(From~To) 필터 |
+| `check_mail_attachment.md` | 위 감시 스크립트 3종 사용 가이드 |
 
 ## 빠른 시작
 
