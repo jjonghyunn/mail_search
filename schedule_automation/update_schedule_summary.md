@@ -1,10 +1,9 @@
 # update_schedule_summary.py  
-<sub>2026-08-19  Jonghyun Park w/ Claude</sub>  
+<sub>2026-08-20  Jonghyun Park w/ Claude</sub>  
 
 `update_schedule.py` 의 사본 + **Summary 시트 자동 정제 단계**를 앞에 붙인 버전.
-최신 파일 선택 규칙·Auto 파일 하류 체인·작업 스케줄러 등록처럼 원본과 겹치는 설명은
-[`data-preprocessing/260324_schedule/README.md`](https://github.com/jjonghyunn/data-preprocessing/tree/main/260324_schedule) 를 보고,
-여기서는 **달라진 부분만** 다룬다.
+같은 폴더의 `README.md`(= `update_schedule.py` 문서)와 겹치는 부분(최신 파일 선택 규칙, Auto 파일 하류 체인,
+작업 스케줄러 등록)은 그쪽을 보고, 여기서는 **달라진 부분만** 다룬다.
 
 ## 왜 만들었나
 
@@ -16,12 +15,17 @@
 ## 동작 순서
 
 1. `1.고객 법인 일정 파일/` 폴더에서 최신 파일 자동 선택 (`update_schedule.py` 와 동일 정렬 규칙)
-2. 마커(`campaign_schedule_last_source.txt`)와 비교 → 파일명·mtime 동일하면 즉시 종료(SKIP)
-3. **[신규] `Summary` 시트 정제 → 일정 13열(B~N) 데이터 생성**
-4. **[신규] 소스 xlsx 에 `일정` 시트로 기록** (`WRITE_SHEET_TO_SOURCE=True` 일 때)
-5. **[변경] 직전 소스 파일도 같은 정제** → 전후 비교(노란 음영)용
+2. `Summary` 시트 정제 → 일정 13열(B~N) 데이터 생성 (**메모리 처리 — 소스 파일 미변경**)
+3. **[2026-08-19 변경] `target_is_saved()` 로 Auto 파일에 그 결과가 실제로 저장돼 있는지 확인**
+   → 이미 반영돼 있으면 SKIP (마커가 아니라 **파일 내용**으로 판정 — 아래 `## 재실행 판정` 참조)
+4. 소스 xlsx 에 `일정` 시트 생성 (`WRITE_SHEET_TO_SOURCE=True` 이고 **그 시트가 없을 때만**)
+   - 2026-08-20: 이미 있으면 **지우지 않고 그대로 둔다** — 수기 편집·고객 원본 보존.
+     다시 만들려면 소스에서 `일정` 시트를 지우고 재실행.
+   - ⚠ 이 단계는 Auto 파일 **갱신이 필요할 때만** 실행된다. 이미 반영돼 있으면
+     그 앞의 `[SKIP]` 에서 종료되므로 시트가 없어도 만들어지지 않는다.
+5. 직전 소스 파일도 같은 정제 → 전후 비교(노란 음영)용
 6. Auto 파일 `고객법인일정파일` 시트 **B2:N999 클리어 후 B5 부터** 붙여넣기
-7. Excel COM 으로 `CalculateFull()` → 저장 → 마커 기록
+7. Excel COM 으로 `CalculateFull()` → 저장 → **저장 직후 `target_is_saved()` 재검증** → 통과했을 때만 마커 기록
 
 ## 정제 룰 (Summary → 일정)
 
@@ -70,11 +74,56 @@
 `TGT_START_ROW = 5`. **B2 가 아니라 B5 부터** 들어가야 한다 (Auto 파일이 그렇게 짜여 있음).
 클리어는 잔재 제거를 위해 한 칸 위인 `TGT_CLEAR_ROW = 2` 부터 (B2:N999).
 
-## 마커 / mtime
+## 재실행 판정 (⚠ 2026-08-19 변경)
 
-소스 파일에 `일정` 시트를 쓰면 mtime 이 바뀌어 **다음 실행이 "새 파일"로 오인**한다.
+**SKIP 여부를 마커가 아니라 `Auto 파일에 실제로 저장된 내용`으로 판정한다.**
+
+### 왜 바꿨나
+
+종전엔 마커(`campaign_schedule_last_source.txt`)가 최신이면 무조건 SKIP 했다. 그런데 마커는
+`recalc_and_save()` 성공 **직후**에 쓰이므로, 그 뒤 Auto 파일이 외부 요인으로 되돌려지면
+**마커만 최신이고 내용은 옛 소스인 상태**로 굳어 스케줄러가 영원히 SKIP 한다.
+
+실제 발생 (2026-08-19):
+
+| 대상 | 값 |
+|---|---|
+| 마커 | `…20260819_v1(…).xlsx` (최신) |
+| Auto `고객법인일정파일!D1` | `…20260811_v2.xlsx` ← **한 세대 전** |
+| Auto 데이터 | 7~61행 (55행, 옛 값) / 실제 필요 = 5~70행 (64행) |
+| mtime | 소스 15:51 → 마커 15:54 → **Auto 15:55** (우리 저장 *이후* 외부가 덮어씀) |
+
+### `target_is_saved(output_file, source_name, src_data)`
+
+`(True, "")` = 이미 반영됨 → 실행 불필요 / `(False, 사유)` = 미반영·유실 → 실행 필요.
+아래를 순서대로 보고 하나라도 걸리면 즉시 `False` + **사유를 로그에 찍는다**.
+
+| # | 검사 | 잡아내는 것 |
+|---|---|---|
+| 1 | `load_workbook(..., data_only=True, read_only=True)` 성공 여부 | 파일 사용 중·손상 |
+| 2 | `TARGET_SHEET` 시트 존재 | 시트 삭제 |
+| 3 | **`D1` == 소스 파일명** (`STAMP_COL`) | 다른 소스가 들어가 있음 / 되돌려짐 |
+| 4 | 붙여넣기 영역(B5~ × 13열) 값 1:1 대조 | 부분 저장·값 변조 (첫 불일치 셀 좌표를 사유에 표기) |
+| 5 | 영역 밖 잔재 행 | 행 수가 줄었는데 옛 행이 남음 |
+
+- 값 비교는 `_norm()` 을 거친다 — openpyxl 은 `date` 로 쓴 값을 **`datetime` 으로 되읽고**,
+  빈 문자열과 빈칸도 구분하므로 그대로 비교하면 매번 불일치가 난다.
+- 읽기는 `read_only=True` + `iter_rows(values_only=True)` **한 번**으로 끝낸다
+  (실측 로드 0.13s + 순회 0.03s — 20분 주기 실행에 부담 없음. `read_only` 에서 `ws.cell()` 랜덤 접근은 느리다).
+
+### 마커의 역할 (기록·경고 전용)
+
+- **판정에는 안 쓴다.** 다만 `마커는 최신인데 target_is_saved() 가 False` 면
+  `[경고] 마커는 '처리 완료'인데 Auto 파일 내용은 최신이 아닙니다` 를 찍어 **저장 유실을 드러낸다.**
+- **마커는 저장 직후 재검증까지 통과했을 때만 기록**한다. 검증 실패 시 기록하지 않지만,
+  어차피 다음 실행이 내용 기준으로 재시도하므로 무한 SKIP 은 발생하지 않는다.
+- SKIP 인데 마커만 안 맞으면 마커를 **뒤늦게 동기화**한다 (자기치유).
+- 이 정책 덕에 마커는 `update_schedule.py` 와 **같은 파일(`campaign_schedule_last_source.txt`)을 계속 공유**한다.
+
+### mtime 복원 (종전과 동일)
+
+소스 파일에 `일정` 시트를 쓰면 mtime 이 바뀌어 마커 값(`파일명|mtime`)이 흔들린다.
 → 저장 직후 `os.utime()` 으로 **원래 mtime 을 복원**해서 마커 의미(= 메일로 받은 버전)를 유지한다.
-덕분에 마커는 `update_schedule.py` 와 **같은 파일(`campaign_schedule_last_source.txt`)을 그대로 공유**한다.
 
 ## 전후 비교(노란 음영)
 
@@ -93,13 +142,14 @@
 | `CAMPAIGN_YEAR` | `2026` | 기간 `M/D` 에 붙일 연도. **캠페인 해가 바뀌면 여기만 수정** |
 | `SUMMARY_SHEET` | `"Summary"` | 없으면 첫 번째 시트로 fallback |
 | `SCHEDULE_SHEET` | `"일정"` | 생성할 정제 시트명 |
-| `WRITE_SHEET_TO_SOURCE` | `True` | `False` 면 메모리 처리만 (소스 파일 미변경) |
-| `H_GLOBAL` / `H_SUBS` / `H_COUNTRY` / `H_EPP` / `H_B2C` / `H_REMARK` | Summary 헤더 문자열 | 고객이 헤더 문구를 바꾸면 여기 수정 |
+| `WRITE_SHEET_TO_SOURCE` | `True` | `일정` 시트가 **없을 때만** 생성. 있으면 손대지 않음. `False` 면 메모리 처리만 (소스 파일 미변경) |
+| `H_GLOBAL` / `H_SUBS` / `H_COUNTRY` / `H_B2B` / `H_B2C` / `H_REMARK` | Summary 헤더 문자열 | 고객이 헤더 문구를 바꾸면 여기 수정 |
 | `SCHED_LABEL_ROW` / `SCHED_HEADER_ROW` | `6` / `7` | 생성 시트 레이아웃 |
 | `SRC_MIN_COL` / `SRC_MAX_COL` | `2` / `14` | 읽기·붙여넣기 열 범위 (B~N) |
 | `TGT_CLEAR_ROW` | `2` | 클리어 시작 행 (B2:N999) |
 | `TGT_START_ROW` | **`5`** | 붙여넣기 시작 행 = Region 라벨행 |
 | `TGT_MAX_ROW`, `COMPARE` | 종전과 동일 | 클리어 하단·음영 대상 |
+| `STAMP_COL` | `4` | D열 — 소스 파일명을 기록·대조하는 열(`D1`). **재실행 판정의 1차 키** |
 
 ## ⚠ Auto 파일 하류 동작 변화 (수동 작업본 대비)
 
@@ -122,6 +172,21 @@
 
 ## 알려진 제약
 
+- **제목·형식과 무관하게 '나중에 도착한 파일'이 이긴다** (2026-08-20, `latest_file_key` v2.0).
+  정렬 키가 `(도착시각, 문서날짜, 문서시각, 버전float, 버전int, 끝번호)` 라 **도착시각이 1순위**다.
+  도착시각은 파일명 끝의 수신일시 스탬프(`_YYMMDD_HHMM`)에서 읽고, 스탬프가 없는 옛 파일은
+  파일명 안의 문서날짜를 그 날 00:00 도착으로 환산한다(그래야 스탬프 있는 옛 파일이 최신을
+  이기는 회귀가 없다). 이름에 날짜가 아예 없으면 그때만 mtime 을 쓴다.
+  `_shared` 처럼 버전 숫자가 없는 접미사, `.xlsb`/`.xlsx` 차이, SW형(8자리)/MD형(6자리) 날짜 —
+  **어느 것도 순서에 영향을 주지 않는다.**
+  ⚠ 바뀐 점: 문서날짜가 옛것이어도 나중에 도착하면 이긴다(고객이 옛 파일을 재전송하면 그게 소스).
+  배경·검증은 `README.md` 의 '최신 파일 선택 기준' 참조.
+- **소스 후보는 이름으로 한 번 거른다** (2026-08-20). `SOURCE_NAME_KEYS = ["schedule", "캠페인", "일정"]`
+  중 하나가 파일명에 있어야 일정 소스 후보가 된다. 같은 폴더에 `check_mail_attachment_byname.py` 가
+  Monitoring 첨부도 저장하기 때문 — `.xlsb` 는 `glob("*.xlsx")` 가 걸러주지만
+  고객이 xlsx 로 보내는 회차(`260804` 류)는 안 걸러진다.
+  negative(`monitoring` 제외) 대신 positive(허용) 방식인 이유는, 이름에 `Monitoring` 이 들어간
+  **진짜 일정 파일**(`..._20260819_v1(Monitoring기반제작).xlsx` — 현행 소스)이 실재하기 때문.
 - 소스 파일을 openpyxl 로 열었다 저장하므로 **`Summary!J5`/`K5`(COUNTIF) 캐시값이 지워진다.**
   소스 파일을 Excel 로 열면 자동 재계산돼 원래 값이 돌아온다 (이 스크립트는 그 셀을 안 읽음).
   캐시가 꼭 필요하면 `WRITE_SHEET_TO_SOURCE=False` 로 두고 소스를 안 건드리면 된다.
@@ -135,31 +200,48 @@
   안 돼서 다음 실행이 같은 소스를 재처리한다(작업 스케줄러엔 실패로 기록).
   → 현재 코드는 `Close(SaveChanges=False)` 를 `try/except TypeError` 로 감싸 양쪽 바인딩 모두에서 통과한다.
   (`%TEMP%` 캐시는 디스크 정리로 언제든 지워지므로 gen_py 재생성이 아니라 코드로 막는 게 맞다.)
+- **⚠ Auto 파일이 외부에 의해 옛 내용으로 되돌려지는 사례 (2026-08-19)** —
+  스크립트가 정상 저장하고 `[완료]` 까지 찍은 뒤에도, 몇 분 지나 Auto 파일이 **한 세대 전 소스 상태로 롤백**되는
+  현상이 두 번 관측됐다 (저장 직후 재검증은 통과 → 이후 롤백). 파일은 클라우드 플레이스홀더가 아니라
+  로컬 고정(`attrib` 의 `P`) 상태이고 Excel 도 안 떠 있었으므로, **OneDrive 동기화(공유 폴더라 서버 버전이
+  내려오는 경우) 또는 다른 사람이 같은 파일을 열어 둔 co-authoring** 이 유력하다.
+  → 이제 재실행 판정이 내용 기준이라 **다음 실행(최대 20분 뒤)이 자동으로 다시 병합**한다. 스크립트는 스스로 복구되지만,
+    근본 원인은 OneDrive 쪽이므로 자주 반복되면 동기화 상태·공동 편집자를 확인할 것.
+  → **스케줄러 실행 시간대에 Auto 파일을 Excel 로 열어두지 말 것** (열어둔 Excel 이 옛 메모리 내용으로 덮어쓸 수 있다).
+- **OneDrive 동기화 중 파일 잠김 (2026-08-19 보강)** — 같은 날 실행 중 Auto 파일과 직전 소스 파일이 동시에
+  `PermissionError` 로 잠긴 순간이 관측됐다. 20분 주기 스케줄러라 **잠김은 그냥 다음 실행에 넘기면 되는 상황**인데,
+  종전 코드는 두 군데서 traceback 으로 죽었다:
+  | 위치 | 종전 | 현재 |
+  |---|---|---|
+  | 소스 파일 정제 (`build_schedule_rows(source_file)`) | 가드 없음 → traceback | `OSError` 잡아 `[SKIP] 소스 파일을 읽을 수 없습니다` 후 `exit(0)` |
+  | 직전 파일 정제 (전후 비교용) | `except (ValueError, KeyError)` 로 좁아 `PermissionError` 통과 → traceback | `except Exception` — **부가 기능이므로 비교만 생략** |
+  Auto 파일 자체를 못 읽는 경우는 `target_is_saved()` 가 `(False, "Auto 파일을 읽을 수 없음 …")` 을 돌려
+  '미반영' 으로 보고 그대로 진행한다 (뒤쪽 쓰기 단계에 이미 `PermissionError` → `[SKIP]` 처리가 있다).
 
 ## 실행 / 스케줄러
 
 ```powershell
-python "C:\Users\user_name\OneDrive - company_name\user_id\your_folder\your_workspace\260324_schedule\update_schedule_summary.py"
+python "C:\Users\user_name\OneDrive - company_name\user_id\work\campaign_schedule\update_schedule_summary.py"
 ```
 
-**2026-08-07 — 작업 스케줄러 `cmp_schedule_update` 를 이 스크립트로 교체 완료.**
+**2026-08-07 — 작업 스케줄러 `campaign_schedule_update` 를 이 스크립트로 교체 완료.**
 (20분 주기 / 10:04 시작 / `/ed 2026/10/15` / 배터리 조건 둘 다 `False` — 트리거·설정은 그대로 두고 action 만 교체)
 
 ```powershell
 # action 만 바꾸는 방식 — 트리거/설정 보존 (재등록보다 안전)
-$py     = '"C:\Python3xx\pythonw.exe"'
-$script = '"C:\Users\user_name\OneDrive - company_name\user_id\your_folder\your_workspace\260324_schedule\update_schedule_summary.py"'
-Set-ScheduledTask -TaskName 'cmp_schedule_update' -Action (New-ScheduledTaskAction -Execute $py -Argument $script)
+$py     = '"C:\Python314\pythonw.exe"'
+$script = '"C:\Users\user_name\OneDrive - company_name\user_id\work\campaign_schedule\update_schedule_summary.py"'
+Set-ScheduledTask -TaskName 'campaign_schedule_update' -Action (New-ScheduledTaskAction -Execute $py -Argument $script)
 
 # Set-ScheduledTask 후 배터리 설정이 되돌아갈 수 있으므로 다시 적용
-$t = Get-ScheduledTask -TaskName 'cmp_schedule_update'
+$t = Get-ScheduledTask -TaskName 'campaign_schedule_update'
 $t.Settings.DisallowStartIfOnBatteries = $false
 $t.Settings.StopIfGoingOnBatteries     = $false
 Set-ScheduledTask -InputObject $t
 ```
 
-> 통째로 재등록하려면 `create_schtasks_v2.txt` 의 `cmp_schedule_update` 줄(이미 새 파일명으로 갱신됨)을 쓰고,
-> 그 뒤 배터리 모드 허용 설정(`create_schtasks_v2.txt` 아래쪽 PowerShell 한 줄)을 다시 적용할 것.
+> 통째로 재등록하려면 `create_schtasks_v2.txt` 의 `campaign_schedule_update` 줄(이미 새 파일명으로 갱신됨)을 쓰고,
+> 그 뒤 배터리 모드 허용 설정(README `### 배터리 모드 허용`)을 다시 적용할 것.
 > 구 `update_schedule.py` 는 롤백용으로 폴더에 그대로 남겨둔다 (스케줄러에는 안 걸림).
 
 ## 검증 기록 (2026-08-07)
@@ -183,3 +265,41 @@ Set-ScheduledTask -InputObject $t
 | `Appendix_Date` / `Appendix_URL` / `태깅기획site_code` | 수기 정렬본과 **diff 0** |
 | `MASTER` | `Q`열 `'0' → 빈칸` 등 48건 (전부 위 "하류 동작 변화" 항목) |
 | `api용` / `RAW_*` / `날짜세그*` / `Last고객법인일정파일` | **diff 0** |
+
+## 검증 기록 (2026-08-19 — 재실행 판정 전환)
+
+| 항목 | 결과 |
+|---|---|
+| 마커가 최신인데 Auto 내용이 옛 소스인 상태에서 실행 | `[경고] 마커는 '처리 완료'…` + `[갱신 필요] D1 소스명 불일치 …` 출력 후 **정상 병합** |
+| 붙여넣기 결과 | `D1` = 0819 소스, `B5=Region` / `B6=헤더` / `B7~70 = 데이터 64행`, 71행 이하 잔재 없음 |
+| 연속 실행 (3회차) | `[SKIP] Auto 파일에 이미 반영돼 있습니다` — Excel COM 미기동 |
+| Auto 파일 오류값 | **신규 발생 없음.** `MASTER!Q` 등의 `#N/A` 는 `MASTER!D` 의 14개 법인이 고객 일정 파일에 애초에 없어서 나는 것으로, **0811·0819 소스에서 동일**(사라진 Subs 0건, 신규 1건) |
+| 저장 유실 재현 | 1회차 `[완료]` 후 롤백 발생 → **2회차가 스스로 감지해 재병합** (위 '알려진 제약' 참조) |
+| OneDrive 잠김 중 실행 | 가드 추가 전에는 `PermissionError` traceback → 가드 후 `[SKIP]`/`[알림]` 로 조용히 물러남 (exit 0) |
+| 최종 상태 | 연속 2회 `[SKIP] Auto 파일에 이미 반영돼 있습니다` (exit 0), Excel COM 미기동 |
+
+
+## 검증 기록 (2026-08-20 — 도착순 반영, `latest_file_key` v1.2)
+
+**계기**: `26 CAMPAIGN NAME Monitoring_260819_v1` 다음에 `..._260819_shared` 가 왔을 때
+`_shared` 가 최신으로 인식되는지 확인 → **안 됐다.** 두 파일의 정렬 키가 `(260819, 0, 0.0, 0, 0)` 로
+완전히 같아 동점이었고, 같은 패턴이 일정 파일에 오면 `_shared`(vN=0) 가 `_v1`(vN=1) 에 밀려
+**나중에 온 파일이 무시**됐다. (상세 경위는 `README.md` v1.2 절)
+
+| 검증 항목 | 결과 |
+|---|---|
+| 실제 소스 폴더(19개) 재정렬 — 회귀 없음 | 최신 = `2026 CAMPAIGN NAME Campaign Schedule_20260819_v1(Monitoring기반제작).xlsx` (변경 전과 동일) |
+| 스탬프 있는 옛 파일 vs 없는 최신 파일 | `_20260806_260807_0949`(2608070949) < `_20260819_v1`(2608190000) — 스탬프 없는 쪽을 문서날짜 00:00 으로 환산해 정상 |
+| 도착시각 최우선 + 스탬프 없는 파일을 `0` 으로 둘 때 (기각안) | `_20260806_260807_0949` 가 `_20260819_v1` 을 이김 ✗ → 문서날짜 환산(v2.0)으로 해결 |
+| 도착순 반영 (모니터링) — **실측** | `_260819_v1_260819_1548`(15:48) < `_260819_shared_260819_2008`(20:08) → `_shared` 최신 ✓ <br>2026-08-20 재수집으로 확인한 실제 수신시각 |
+| 도착순 반영 (일정) — 가상 | `_20260819_v1_260819_1551` < `_20260819_shared_260819_1802` → `_shared` 최신 ✓ <br>(일정 파일엔 아직 이 패턴이 안 왔음 — 시뮬레이션)|
+| 같은 메일 v1·v2 동봉 (수신일시 동일) | `ver_int` tiebreak 살아있어 v2 최신 ✓ |
+| MD형(6자리 날짜 + `vX.XX`) 회귀 | `_v0.44_260319` / `_v0.48_260420` / `_v0.49_260420` 순서 종전과 동일 ✓ |
+| **v2.0** 실제 소스 폴더(19개) 재정렬 | 선택 결과 변경 전과 동일 (`..._20260819_v1(Monitoring기반제작).xlsx`) ✓ |
+| **v2.0** SW/MD 자릿수 문제 | `sw_20260415_1543`(2604151543) < `md_v1.0_260416`(2604160000) — 6자리 정규화로 실제 날짜 비교 ✓ |
+| **v2.0** 이름에 날짜 없음 → mtime | mtime 1시간 차 두 파일에서 늦은 쪽 선택 ✓ |
+| **v2.0** 옛 문서날짜 + 늦은 도착 | `_20260818_shared_260825_1030` 가 `_20260819_v1_260819_1551` 을 이김 — **의도된 신규 동작** |
+
+**같이 고친 것 (3번째 대응)**: 수신일시 꼬리를 **파일명 끝에서** 떼도록 변경.
+종전 정규식은 문서날짜 *바로 뒤*에 붙은 꼬리만 읽어서 `..._20260819_shared_260819_1802` 처럼
+사이에 토큰이 끼면 `mail = 0` 이 나왔다 (1차 수정만으로는 일정 파일 케이스가 안 고쳐졌음).

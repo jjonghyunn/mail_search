@@ -1,7 +1,7 @@
 """
 update_schedule_summary.py   [CAMPAIGN NAME 폴더 전용 — update_schedule.py 의 정제 통합판]
 2026-08-11  Jonghyun Park w/ Claude
-2026-08-19  Jonghyun Park w/ Claude  — public repo 공개판 (설정값 placeholder 화)
+2026-08-19  Jonghyun Park w/ Claude  — SKIP 판정을 마커 대신 Auto 파일 실제 저장내용으로 전환
 
 update_schedule.py 와의 차이 = **Summary 시트 자동 정제 단계가 앞에 붙었다**.
 
@@ -12,13 +12,23 @@ update_schedule.py 와의 차이 = **Summary 시트 자동 정제 단계가 앞�
 
 흐름:
  1. `1.고객 법인 일정 파일/` 폴더에서 최신 파일 자동 선택 (update_schedule.py 와 동일 정렬 규칙)
- 2. 마커 비교 → 소스 변경 없으면 SKIP
- 3. **[신규] Summary 시트 정제 → 일정 13열 데이터 생성**
- 4. **[신규] 소스 xlsx 에 `일정` 시트로 기록** (WRITE_SHEET_TO_SOURCE=True 일 때)
+ 2. Summary 시트 정제 → 일정 13열 데이터 생성 (**메모리 처리 — 소스 파일 미변경**)
+ 3. **Auto 파일에 그 결과가 실제로 저장돼 있는지 확인** → 이미 반영돼 있으면 SKIP
+    (마커/로그가 아니라 파일 내용으로 판정 — 아래 '재실행 판정' 참조)
+ 4. 소스 xlsx 에 `일정` 시트로 기록 (WRITE_SHEET_TO_SOURCE=True 일 때)
  5. 직전 소스 파일도 같은 정제 → 전후 비교(노란 음영)용
  6. Auto 파일 `고객법인일정파일` 시트 B2:N999 클리어 후 **B5 부터** 붙여넣기
     (B5 = Region 라벨행, B6 = 헤더행, B7~ = 데이터)
- 7. Excel COM 으로 전체 재계산 후 저장
+ 7. Excel COM 으로 전체 재계산 후 저장 → **저장 직후 재검증** → 통과했을 때만 마커 기록
+
+재실행 판정 (2026-08-19 변경):
+  종전엔 마커(campaign_schedule_last_source.txt)가 최신이면 무조건 SKIP 했다. 그런데 저장이 끝난 뒤
+  Auto 파일이 외부(열려 있던 Excel / OneDrive 옛 버전 복원)에 의해 되돌려지면 **마커만 남고 내용은
+  옛 소스인 상태로 굳어** 스케줄러가 영원히 SKIP 한다.
+  실제 발생: 2026-08-19 — 마커는 0819 소스인데 Auto 파일 D1 은 0811 소스, 데이터도 55행(옛 값)이었다.
+  (마커 mtime 15:54 < Auto 파일 mtime 15:55 → 우리 저장 이후 외부가 덮어쓴 정황)
+  → 이제 target_is_saved() 가 Auto 파일의 D1 스탬프 + 붙여넣기 영역 값 + 잔재 행을 **실제로 대조**해
+    판정한다. 마커는 기록·경고용으로만 남는다 (같은 파일을 쓰는 구 update_schedule.py 호환 유지).
 
 정제 룰 (Summary → 일정):
   B Global      ← Summary 의 'Region'/'Global' 텍스트가 있는 열 (그룹 시작행에만 값)
@@ -44,6 +54,7 @@ import datetime as dt
 from pathlib import Path
 import openpyxl
 from openpyxl.styles import PatternFill
+from openpyxl.utils import get_column_letter
 import win32com.client
 import pywintypes
 
@@ -54,10 +65,15 @@ import pywintypes
 BASE = Path(
     r"C:\Users\user_name\OneDrive - company_name"
     r"\Project_team_name - 1 company_name - 02 part_name"
-    r"\part_name\2026\# CAMPAIGN_PROJECTS\03. CAMPAIGN NAME\02. SCHEDULE"
+    r"\part_name\2026\# CAMPAIGN_PROJECTS\03. CAMPAIGN NAME\01. SCHEDULE"
 )
 
 SOURCE_FOLDER    = BASE / "1.고객 법인 일정 파일"
+# 일정 소스로 인정할 파일명 키워드 (소문자 매칭, 하나라도 포함되면 후보).
+# check_mail_attachment_byname.py 가 Monitoring 첨부도 같은 폴더에 저장하므로,
+# 그게 xlsx 로 오는 회차(260804 류)에 일정 소스로 오선택되는 걸 막는 안전장치.
+# ⚠ 삭제하지 말 것 — Monitoring 파일이 xlsb 일 땐 glob 이 걸러주지만 xlsx 는 안 걸러진다.
+SOURCE_NAME_KEYS = ["schedule", "캠페인", "일정"]
 TARGET_SHEET     = "고객법인일정파일"
 LAST_SOURCE_FILE = BASE / "campaign_schedule_last_source.txt"  # 마커: Auto 파일과 같은 폴더 (프로젝트별 독립 관리)
 
@@ -75,7 +91,7 @@ WRITE_SHEET_TO_SOURCE = True        # False 면 메모리 처리만 (소스 파�
 H_GLOBAL  = "Global"            # 이 헤더가 있는 열 = Region/Global 열
 H_SUBS    = "Subs"              # 정확일치. 'Subs.'(라벨행) 는 매칭 안 됨
 H_COUNTRY = "Country"
-H_EPP     = "캠페인 기간(B2B)"
+H_B2B     = "캠페인 기간(B2B)"
 H_B2C     = "캠페인 기간(B2C)"
 H_REMARK  = "Remark"
 
@@ -85,7 +101,7 @@ SCHED_HEADER_ROW = 7   # 헤더행 (데이터는 그 다음 행부터)
 
 # 생성 시트 헤더행에 쓸 값 (B~N 13칸)
 SCHED_HEADER = ["Global", "Subs", "Country", None,
-                H_EPP, None, None, None,
+                H_B2B, None, None, None,
                 H_B2C, None, None, None,
                 "note"]
 
@@ -95,6 +111,7 @@ SRC_MAX_COL   = 14   # N (note)
 TGT_CLEAR_ROW = 2    # 클리어 시작 행 (붙여넣기 위쪽 잔재까지 지우도록 더 위에서 시작)
 TGT_START_ROW = 5    # 붙여넣기 시작 행 = Region 라벨행 → 헤더 6행, 데이터 7행~
 TGT_MAX_ROW   = 999  # 클리어 범위 하단
+STAMP_COL     = 4    # D — 붙여넣은 소스 파일명을 기록·대조하는 열 (D1). 재실행 판정의 1차 키
 
 # 전후 비교(노란 음영) 대상 — {row_data 인덱스: 타겟 열번호}
 # row_data 인덱스 0=B … 12=N,  타겟 열번호 = 인덱스 + 2
@@ -119,69 +136,100 @@ ROW_LEN      = SRC_MAX_COL - SRC_MIN_COL + 1        # 13
 
 
 # ── 최신 파일 정렬 키 ────────────────────────────────────────
-def mail_stamp_key(date6: str | None, hhmm: str | None) -> int:
-    """메일수신 일시(YYMMDD[_HHMM])를 정렬 가능한 정수 하나로 합침.
+# 2026-08-20 (v2.0): **도착 시각 최우선**으로 전환.
+#   종전 키 `(doc_date, mail_stamp, hhmm, ver_float, ver_int)` 는 파일명 안의 문서날짜가
+#   1순위였다. 그래서 제목·형식(`_vN` / `_shared` / 8자리 vs 6자리 날짜)이 승패를 갈랐고,
+#   고객이 옛 문서날짜로 새 파일을 보내면(재공유·수정본) 나중에 온 파일이 밀렸다.
+#   이제 '언제 도착했나' 하나를 축으로 삼는다 — 제목·형식이 뭐가 됐든 최신이 이긴다.
 
-    YYMMDD*10000 + HHMM → 260722_1432 = 2607221432, 260722(시각없음) = 2607220000
-    시각 없는 옛 파일이 같은 날 시각 있는 파일보다 항상 앞(=오래된 것)으로 정렬됨.
+def name_stamp(date_token: str, hhmm: str | None = None) -> int:
+    """날짜 토큰(YYYYMMDD 또는 YYMMDD) + 선택적 HHMM → 비교용 정수 YYMMDDHHMM.
+
+    8자리는 앞 2자리(세기)를 떼어 6자리로 맞춘다 — 20260819 → 260819 → 2608190000.
+    이렇게 해야 SW형(8자리)과 MD형(6자리)이 **같은 축**에서 비교된다.
+    (종전엔 20260819 vs 260819 를 그대로 비교해 자릿수만으로 승패가 갈렸다.)
     """
-    return int(date6 or 0) * 10000 + int(hhmm or 0)
+    d = date_token[2:] if len(date_token) == 8 else date_token
+    return int(d) * 10000 + int(hhmm or 0)
+
+
+def file_mtime_stamp(f: Path) -> int:
+    """최후 수단 — 파일명에 날짜가 전혀 없을 때만 mtime 을 YYMMDDHHMM 으로 환산.
+
+    ⚠ mtime 은 OneDrive 동기화·열어서 저장 등으로 쉽게 바뀌어 신뢰도가 낮다
+      (실측: `_20260811_v2` 의 mtime 이 `_20260819_v1` 보다 나중이었다).
+      파일명에 날짜가 하나라도 있으면 여기까지 오지 않는다.
+    """
+    try:
+        t = dt.datetime.fromtimestamp(f.stat().st_mtime)
+    except OSError:
+        return 0
+    return int(t.strftime("%y%m%d")) * 10000 + int(t.strftime("%H%M"))
 
 
 def latest_file_key(f: Path):
-    """파일명에서 정렬 키 (문서날짜, HHMM, 버전float, 버전int, 메일수신일시) 반환.
+    """(도착시각, 문서날짜, 문서시각, 버전float, 버전int, 끝번호) — 큰 튜플이 최신.
 
-    ※ 마지막 성분(메일수신일시)은 check_mail_attachment_byname.py 가 **같은 파일명이 재수신될 때만**
-      덧붙이는 suffix. 2026-07-22 부터 _YYMMDD → _YYMMDD_HHMM (시각 포함) 으로 바뀌었고,
-      옛 _YYMMDD 형식도 그대로 파싱되므로 기존 파일 재정렬 문제 없음.
+    **1순위 '도착시각'** 을 아래 우선순위로 정한다. 제목·버전 표기와 무관하다:
+      a) 파일명 **맨 앞**의 `YYMMDD_HHMM_`  — 2026-08-20~ check_mail_attachment_byname.py 가 붙이는 수신일시
+      b) 파일명 **맨 뒤**의 `_YYMMDD_HHMM` / `_YYMMDD` — 그 이전 수집분 (구형, 날짜만이면 00:00)
+      c) 파일명 안의 문서날짜         — 스탬프 없는 옛 파일. 그 날 00:00 에 온 것으로 간주
+      d) 파일 mtime                  — 날짜가 아예 없는 파일 (최후 수단)
 
-    A형 (8자리 날짜):
-      YYYYMMDD_HHMM[_YYMMDD[_HHMM]]  → (doc_date, hhmm, 0, 0, mail)
-      YYYYMMDD_vN[_YYMMDD[_HHMM]]    → (doc_date, 0, 0, ver_int, mail)
-      YYYYMMDD_YYMMDD[_HHMM]         → (doc_date, 0, 0, 0, mail)
-      YYYYMMDD                       → (doc_date, 0, 0, 0, 0)
+    c) 가 필요한 이유: 2026-08-20 이전 수집분엔 스탬프가 없다. 이들을 0 으로 두면
+    스탬프 붙은 옛 파일이 최신 파일을 이겨버린다 (`_20260806_260807_0949` 가
+    `_20260819_v1` 을 이기는 회귀). 문서날짜를 도착시각의 근사값으로 써서 막는다.
 
-    B형 (6자리 날짜 + vX.XX 버전):
-      _vX.XX_YYMMDD[_YYMMDD_HHMM]    → (doc_date6, 0, ver_float, suffix, mail)
+    2~5순위는 **도착시각이 같을 때만** 쓰인다 (같은 메일에 v1·v2 가 동봉된 경우 등).
+
+    예)
+      260819_1548_..._20260819_v1      → (2608191548, 260819, 0, 0.0, 1, 0)  신형(접두)
+      260819_2008_..._20260819_shared  → (2608192008, 260819, 0, 0.0, 0, 0)  ← 최신
+      ..._20260819_v1_260819_1548      → (2608191548, 260819, 0, 0.0, 1, 0)  구형(접미)
+      ..._20260819_v1                  → (2608190000, 260819, 0, 0.0, 1, 0)  스탬프 없음 → 문서날짜
+      ..._v0.49_260420                 → (2604200000, 0,      0, 0.49, 0, 0) MD형
     """
     name = f.stem
 
-    # 메일 suffix 공통 꼬리: _YYMMDD 또는 _YYMMDD_HHMM (둘 다 없어도 됨)
-    MAIL_TAIL = r'(?:_(\d{6})(?:_(\d{4}))?)?'
-
-    m8 = re.search(r'(?<!\d)(\d{8})(?!\d)', name)
-    if m8:
-        doc_date = int(m8.group(1))
-
-        # YYYYMMDD_HHMM[_메일꼬리]: 뒤에 4자리 숫자가 오되 그 직후 숫자 없을 때
-        m = re.search(r'(?<!\d)\d{8}_(\d{4})' + MAIL_TAIL + r'(?!\d)', name)
+    # ① 수신일시 스탬프를 뗀다. 2026-08-20 부터 **맨 앞**(YYMMDD_HHMM_)에 붙이고,
+    #    그 이전 수집분은 **맨 뒤**(_YYMMDD_HHMM / _YYMMDD)에 붙어 있어 둘 다 읽는다.
+    m = re.match(r"^(\d{6})_(\d{4})_", name)            # 신형: 접두
+    if m:
+        arrive, core = name_stamp(m.group(1), m.group(2)), name[m.end():]
+    else:
+        m = re.search(r"_(\d{6})_(\d{4})$", name)        # 구형: 접미 (날짜+시각)
         if m:
-            return (doc_date, int(m.group(1)), 0.0, 0, mail_stamp_key(m.group(2), m.group(3)))
+            arrive, core = name_stamp(m.group(1), m.group(2)), name[:m.start()]
+        else:
+            m = re.search(r"_(\d{6})$", name)             # 구형: 접미 (날짜만)
+            arrive, core = (name_stamp(m.group(1)), name[:m.start()]) if m else (None, name)
 
-        # YYYYMMDD_vN[_메일꼬리]
-        m = re.search(r'(?<!\d)\d{8}_v(\d+)' + MAIL_TAIL, name)
-        if m:
-            return (doc_date, 0, 0.0, int(m.group(1)), mail_stamp_key(m.group(2), m.group(3)))
+    # ② 남은 이름에서 문서날짜(8자리 우선, 없으면 6자리)와 문서시각을 읽는다
+    m8 = re.search(r"(?<!\d)(\d{8})(?!\d)", core)
+    m6 = None if m8 else re.search(r"(?<!\d)(\d{6})(?!\d)", core)
+    doc_token = m8.group(1) if m8 else (m6.group(1) if m6 else None)
 
-        # YYYYMMDD_YYMMDD[_HHMM]
-        m = re.search(r'(?<!\d)\d{8}_(\d{6})(?:_(\d{4}))?(?!\d)', name)
-        if m:
-            return (doc_date, 0, 0.0, 0, mail_stamp_key(m.group(1), m.group(2)))
+    mh = re.search(r"(?<!\d)\d{8}_(\d{4})(?!\d)", core)
+    doc_hhmm = int(mh.group(1)) if mh else 0
 
-        return (doc_date, 0, 0.0, 0, 0)
+    # ③ 도착시각 확정 — 스탬프 없으면 문서날짜, 그것도 없으면 mtime
+    if arrive is None:
+        arrive = name_stamp(doc_token, doc_hhmm or None) if doc_token else file_mtime_stamp(f)
 
-    # ── B형: _vX.XX_YYMMDD ──
-    # ⚠ 끝번호 정규식 `_(\d{1,5})$` 이 메일 suffix 의 시각(_1432)을 버전 끝번호로 오인하므로,
-    #   끝의 `_YYMMDD_HHMM`(날짜+시각이 둘 다 있는 형태 = 우리가 붙인 것) 을 먼저 떼어낸 뒤 판정.
-    #   날짜만 있는 `_YYMMDD` 는 문서날짜일 수 있어 떼지 않음 (종전 동작 유지).
-    m_tail   = re.search(r'_(\d{6})_(\d{4})$', name)
-    mail_key = mail_stamp_key(m_tail.group(1), m_tail.group(2)) if m_tail else 0
-    core     = name[:m_tail.start()] if m_tail else name
+    # ④ 동점 tiebreak — 문서날짜도 6자리로 정규화해 SW/MD 형이 같은 축에 오게 한다
+    doc_date = int(doc_token[2:] if doc_token and len(doc_token) == 8 else (doc_token or 0))
 
-    date6   = int(m.group()) if (m := re.search(r'(?<!\d)\d{6}(?!\d)', core)) else 0
-    version = float(m.group(1)) if (m := re.search(r'_v(\d+\.\d+)', core)) else 0.0
-    suffix  = int(m.group(1)) if (m := re.search(r'_(\d{1,5})$', core)) else 0
-    return (date6, 0, version, suffix, mail_key)
+    mv = re.search(r"_v(\d+\.\d+)", core)
+    ver_float = float(mv.group(1)) if mv else 0.0
+    mv = re.search(r"_v(\d+)(?!\.\d)", core)
+    ver_int = int(mv.group(1)) if mv else 0
+
+    # MD형의 수기 끝번호 (`..._v0.44_260319_2`) — 도착시각·버전까지 같을 때의 마지막 tiebreak.
+    # SW형은 끝이 `_vN` 이거나 8자리 날짜라 여기에 걸리지 않는다.
+    ms = re.search(r"_(\d{1,5})$", core)
+    suffix = int(ms.group(1)) if ms else 0
+
+    return (arrive, doc_date, doc_hhmm, ver_float, ver_int, suffix)
 
 
 # ── Summary 정제 ─────────────────────────────────────────────
@@ -231,7 +279,7 @@ def find_summary_layout(ws):
 
     cols = {"global": global_col}
     for key, header in (("subs", H_SUBS), ("country", H_COUNTRY),
-                        ("epp", H_EPP), ("b2c", H_B2C), ("remark", H_REMARK)):
+                        ("b2b", H_B2B), ("b2c", H_B2C), ("remark", H_REMARK)):
         for c in range(1, ws.max_column + 1):
             v = ws.cell(header_row, c).value
             if isinstance(v, str) and v.strip() == header:
@@ -262,7 +310,7 @@ def build_schedule_rows(xlsx_path: Path) -> tuple[list, list]:
         if subs in (None, "") and country in (None, ""):
             continue                                    # 데이터 행 아님
 
-        epp_start, epp_end = parse_period(ws.cell(r, cols["epp"]).value)
+        epp_start, epp_end = parse_period(ws.cell(r, cols["b2b"]).value)
         b2c_start, b2c_end = parse_period(ws.cell(r, cols["b2c"]).value)
         participation = "O" if any((epp_start, epp_end, b2c_start, b2c_end)) else None
 
@@ -281,7 +329,11 @@ def build_schedule_rows(xlsx_path: Path) -> tuple[list, list]:
 
 
 def write_schedule_sheet(xlsx_path: Path, label_rows: list, data_rows: list) -> None:
-    """소스 xlsx 에 정제 결과를 `일정` 시트로 기록 (기존 시트가 있으면 교체).
+    """소스 xlsx 에 정제 결과를 `일정` 시트로 기록 (**없을 때만** 새로 만든다).
+
+    2026-08-20: 기존 시트가 있으면 지우고 다시 쓰던 것을 **그대로 두는** 방식으로 변경.
+    고객이 보낸 `일정` 시트나 손으로 고친 내용이 매 실행마다 덮여 사라지는 걸 막는다.
+    → 다시 만들고 싶으면 소스 파일에서 `일정` 시트를 지우고 재실행하면 된다.
 
     파일 수정 시각(mtime)은 원래대로 되돌린다 — 마커가 '메일로 받은 버전'을 가리키도록 유지하고,
     우리가 쓴 것 때문에 다음 실행이 재처리로 오인하지 않게.
@@ -293,8 +345,12 @@ def write_schedule_sheet(xlsx_path: Path, label_rows: list, data_rows: list) -> 
         print(f"[알림] 소스 파일이 사용 중이라 '{SCHEDULE_SHEET}' 시트 기록을 건너뜁니다: {xlsx_path.name}")
         return
 
+    # 이미 있으면 손대지 않는다 (수기 편집·고객 원본 보존). 저장도 안 하므로 파일 무변경.
     if SCHEDULE_SHEET in wb.sheetnames:
-        del wb[SCHEDULE_SHEET]
+        wb.close()
+        print(f"[정제 시트] '{SCHEDULE_SHEET}' 시트가 이미 있어 그대로 둡니다 — {xlsx_path.name}")
+        return
+
     ws = wb.create_sheet(SCHEDULE_SHEET, 0)
 
     for r_offset, row_data in enumerate(label_rows + data_rows):
@@ -313,7 +369,78 @@ def write_schedule_sheet(xlsx_path: Path, label_rows: list, data_rows: list) -> 
         wb.close()
 
     os.utime(xlsx_path, (orig_stat.st_atime, orig_stat.st_mtime))
-    print(f"[정제 시트] '{SCHEDULE_SHEET}' 기록 완료 ({len(data_rows)}행) — {xlsx_path.name}")
+    print(f"[정제 시트] '{SCHEDULE_SHEET}' 시트 신규 생성 ({len(data_rows)}행) — {xlsx_path.name}")
+
+
+# ── Auto 파일 저장상태 확인 ─────────────────────────────────
+def _norm(v):
+    """저장된 값 ↔ 정제 결과를 비교 가능한 형태로 정규화.
+
+    openpyxl 은 date 로 쓴 값을 datetime 으로 되읽고, 빈 문자열과 빈칸도 구분되므로
+    그대로 비교하면 매번 불일치가 난다.
+    """
+    if isinstance(v, dt.datetime):          # date 로 썼어도 datetime 으로 돌아온다
+        return v.date()
+    if isinstance(v, str):
+        v = v.replace("\r\n", "\n").strip()
+        return v or None                    # 빈 문자열 == 빈칸
+    return v
+
+
+def target_is_saved(output_file: Path, source_name: str, src_data: list) -> tuple[bool, str]:
+    """Auto 파일에 현재 소스의 정제 결과가 **실제로 저장돼 있는지** 확인.
+
+    (True, "")    = 이미 반영됨 → 실행 불필요
+    (False, 사유) = 미반영·유실 → 실행 필요
+
+    마커(로그)를 믿지 않고 파일 내용으로만 판정한다. 저장이 끝난 뒤 외부(Excel/OneDrive)가
+    파일을 되돌려도 다음 실행이 스스로 알아채고 재처리하게 하는 게 목적.
+    """
+    try:
+        wb = openpyxl.load_workbook(output_file, data_only=True, read_only=True)
+    except Exception as e:                  # 사용 중·손상 등 — 못 읽으면 '미반영' 으로 보고 진행
+        return False, f"Auto 파일을 읽을 수 없음 ({type(e).__name__}: {e})"
+
+    try:
+        if TARGET_SHEET not in wb.sheetnames:
+            return False, f"'{TARGET_SHEET}' 시트 없음"
+        ws = wb[TARGET_SHEET]
+        # read_only 모드는 ws.cell() 랜덤 접근이 느리므로 한 번에 훑어 dict 로 받는다
+        rows = {r_idx: row for r_idx, row in enumerate(
+            ws.iter_rows(min_row=1, max_row=TGT_MAX_ROW,
+                         min_col=SRC_MIN_COL, max_col=SRC_MAX_COL,
+                         values_only=True), start=1)}
+    finally:
+        wb.close()
+
+    def cell(r_idx: int, col: int):
+        row = rows.get(r_idx)
+        idx = col - SRC_MIN_COL
+        return row[idx] if row and idx < len(row) else None
+
+    # 1) D1 소스 파일명 스탬프
+    stamp = _norm(cell(1, STAMP_COL))
+    if stamp != source_name:
+        return False, f"D1 소스명 불일치 (저장됨 {stamp!r} != 현재 {source_name!r})"
+
+    # 2) 붙여넣기 영역 값 대조 (B5~ / 13열)
+    for r_offset, want_row in enumerate(src_data):
+        r_idx = TGT_START_ROW + r_offset
+        for c_offset, want in enumerate(want_row):
+            got = cell(r_idx, SRC_MIN_COL + c_offset)
+            if _norm(got) != _norm(want):
+                col = get_column_letter(SRC_MIN_COL + c_offset)
+                return False, f"{col}{r_idx} 값 불일치 (저장됨 {got!r} != 소스 {want!r})"
+
+    # 3) 영역 밖 잔재 — 행 수가 줄었는데 옛 행이 남은 경우 (1행은 스탬프 행이라 제외)
+    paste_end = TGT_START_ROW + len(src_data) - 1
+    for r_idx, row in rows.items():
+        if r_idx < TGT_CLEAR_ROW or TGT_START_ROW <= r_idx <= paste_end:
+            continue
+        if any(_norm(v) is not None for v in row):
+            return False, f"{r_idx}행에 옛 데이터 잔재"
+
+    return True, ""
 
 
 # ── Auto 파일 자동 탐색 ──────────────────────────────────────
@@ -324,24 +451,49 @@ output_file = auto_files[0]
 print(f"[업데이트 대상] {output_file.name}")
 
 # ── 소스 폴더에서 최신 파일 선택 ────────────────────────────
-xlsx_files = sorted(SOURCE_FOLDER.glob("*.xlsx"), key=latest_file_key)
+# 이름에 SOURCE_NAME_KEYS 가 하나라도 있는 xlsx 만 소스 후보 (Monitoring xlsx 배제)
+xlsx_files = sorted(
+    (f for f in SOURCE_FOLDER.glob("*.xlsx")
+     if any(k in f.name.lower() for k in SOURCE_NAME_KEYS)),
+    key=latest_file_key,
+)
 if not xlsx_files:
-    raise FileNotFoundError(f"소스 폴더에 xlsx 파일이 없습니다: {SOURCE_FOLDER}")
+    raise FileNotFoundError(
+        f"소스 폴더에 일정 xlsx 가 없습니다 (이름에 {SOURCE_NAME_KEYS} 중 하나 필요): {SOURCE_FOLDER}")
 
 source_file = xlsx_files[-1]
 print(f"[소스 파일] {source_file.name}")
 
-# 소스 파일이 이전과 동일하면 업데이트 불필요 → 스킵 (파일명 + mtime 기준)
-src_mtime = int(source_file.stat().st_mtime)
-current_marker = f"{source_file.name}|{src_mtime}"
-if LAST_SOURCE_FILE.exists() and LAST_SOURCE_FILE.read_text(encoding="utf-8").strip() == current_marker:
-    print(f"[SKIP] 소스 파일 변경 없음 ({source_file.name}), 업데이트 생략")
+# ── Summary 정제 (메모리 — 소스 파일 미변경) ─────────────────
+# ※ OneDrive 동기화 중이면 잠깐 잠길 수 있다. 작업 스케줄러에 '실패'로 남기지 말고
+#   조용히 물러나 다음 실행(20분 뒤)이 재시도하게 한다.
+try:
+    label_rows, data_rows = build_schedule_rows(source_file)
+except OSError as e:
+    print(f"[SKIP] 소스 파일을 읽을 수 없습니다 ({type(e).__name__}). 다음 실행 시 재시도합니다: {source_file.name}")
     exit(0)
-
-# ── Summary 정제 ─────────────────────────────────────────────
-label_rows, data_rows = build_schedule_rows(source_file)
 src_data = label_rows + data_rows
 print(f"[정제 완료] 데이터 {len(data_rows)}행 (+ 헤더 {len(label_rows)}행)")
+
+# ── 재실행 판정 — 마커(로그)가 아니라 Auto 파일에 실제 저장된 내용으로 ──
+# ※ 마커는 '처리 완료' 기록·경고용으로만 남긴다. 판정에 쓰면 저장이 유실됐을 때 영원히 SKIP 된다.
+src_mtime = int(source_file.stat().st_mtime)
+current_marker = f"{source_file.name}|{src_mtime}"
+marker_says_done = (LAST_SOURCE_FILE.exists()
+                    and LAST_SOURCE_FILE.read_text(encoding="utf-8").strip() == current_marker)
+
+saved, reason = target_is_saved(output_file, source_file.name, src_data)
+if saved:
+    print(f"[SKIP] Auto 파일에 이미 반영돼 있습니다 ({source_file.name})")
+    if not marker_says_done:
+        LAST_SOURCE_FILE.write_text(current_marker, encoding="utf-8")
+        print("[알림] 내용은 최신이라 마커만 뒤늦게 동기화했습니다.")
+    exit(0)
+
+if marker_says_done:
+    print("[경고] 마커는 '처리 완료'인데 Auto 파일 내용은 최신이 아닙니다 — 저장이 유실된 것으로 보고 재실행합니다.")
+    print("        (Auto 파일이 Excel 에서 열려 있었거나 OneDrive 가 옛 버전으로 되돌렸을 수 있습니다)")
+print(f"[갱신 필요] {reason}")
 
 if WRITE_SHEET_TO_SOURCE:
     write_schedule_sheet(source_file, label_rows, data_rows)
@@ -360,9 +512,13 @@ if len(xlsx_files) >= 2:
     prev_file = xlsx_files[-2]
     try:
         _, prev_rows = build_schedule_rows(prev_file)
-    except (ValueError, KeyError) as e:      # 옛 포맷(Summary 없음/헤더 다름) → 비교 생략
+    except Exception as e:
+        # 전후 비교는 **부가 기능**이라 여기서 죽으면 안 된다. 실패 원인 2종 모두 비교만 생략:
+        #  - ValueError/KeyError : 옛 포맷(Summary 없음/헤더 다름)
+        #  - OSError(PermissionError 등) : OneDrive 동기화 중 파일 잠김 (2026-08-19 실제 발생 —
+        #    이 절이 좁아서 스크립트 전체가 traceback 으로 죽었다)
         prev_rows = []
-        print(f"[알림] 이전 파일 정제 불가 — 전후 비교 생략 ({prev_file.name}): {e}")
+        print(f"[알림] 이전 파일 정제 불가 — 전후 비교 생략 ({prev_file.name}): {type(e).__name__}: {e}")
     seen_prev = {}
     for row_data in prev_rows:
         prev_data[compare_key(row_data, seen_prev)] = row_data
@@ -381,8 +537,8 @@ if TARGET_SHEET not in tgt_wb.sheetnames:
 
 tgt_ws = tgt_wb[TARGET_SHEET]
 
-# D1에 소스 파일명 기록
-tgt_ws.cell(row=1, column=4, value=source_file.name)
+# D1에 소스 파일명 기록 (재실행 판정의 1차 키 — target_is_saved() 가 이 값을 대조한다)
+tgt_ws.cell(row=1, column=STAMP_COL, value=source_file.name)
 
 # 대상 영역(B2:N999)과 겹치는 병합셀 해제 — MergedCell 은 value 설정 불가(read-only)라
 # 클리어/붙여넣기에서 충돌. 어차피 이 영역은 소스값으로 덮어쓰므로 해제해도 무방.
@@ -468,9 +624,6 @@ def recalc_and_save(path: Path) -> None:
 for attempt in range(1, COM_RETRIES + 1):
     try:
         recalc_and_save(output_file)
-        LAST_SOURCE_FILE.write_text(current_marker, encoding="utf-8")
-        print(f"[완료] {output_file.name} 저장 완료")
-        break
     except pywintypes.com_error as e:
         print(f"[재시도 {attempt}/{COM_RETRIES}] Excel COM 실패: {e}")
         if attempt == COM_RETRIES:
@@ -480,3 +633,16 @@ for attempt in range(1, COM_RETRIES + 1):
             print(f"        (마커를 기록하지 않았으므로 다음 실행이 같은 소스를 재처리합니다)")
             raise
         time.sleep(COM_RETRY_WAIT_SEC)
+        continue
+
+    # 저장 직후 재검증 — 마커는 여기를 통과했을 때만 기록한다.
+    # ※ 저장이 외부(Excel/OneDrive)에 의해 되돌려진 경우를 즉시 드러내기 위한 단계.
+    ok, why = target_is_saved(output_file, source_file.name, src_data)
+    if ok:
+        LAST_SOURCE_FILE.write_text(current_marker, encoding="utf-8")
+        print(f"[완료] {output_file.name} 저장 완료")
+    else:
+        print(f"[경고] 저장 직후 검증 실패 — {why}")
+        print("        다른 프로그램(Excel/OneDrive)이 파일을 되돌렸을 수 있습니다.")
+        print("        마커를 기록하지 않았으므로 다음 실행이 다시 처리합니다.")
+    break

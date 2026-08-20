@@ -6,46 +6,44 @@
 :: - pythonw.exe 경로와 py 파일 경로를 각각 \"...\" 로 감싸야 공백 처리 가능
 :: - python.exe 대신 pythonw.exe 사용 → 실행 시 cmd 창이 뜨지 않음
 :: - 작업명(/tn)에는 공백 넣지 말 것
-:: - /ed 2026/10/15 는 예시(캠페인 종료일) — 실제 종료일로 교체할 것
-:: - 아래 중 이 폴더에 있는 것은 check_mail_attachment.py 와 update_schedule*.py 뿐이다.
-::   check_mail_attachment_byname/_status/_url.py, mail_search_to_msg_onlymsg.py,
-::   summarize_msgs.py 는 별도 repo(mail_search) 의 도구 — 같은 스케줄 묶음으로 돌리는
-::   예시라 함께 적어둔다. /tr 경로는 그 repo 를 받아둔 위치로 바꿀 것.
-::   https://github.com/jjonghyunn/mail_search
 ::
 :: ─── 실행 시각 배치 (분 단위 중복 없게) ───
-:: 09:57 /mo 60  cmp_mail_search_to_msg
-:: 10:01 /mo 20  cmp_mail_check              (→ :21 :41 반복)
-:: 10:02 /mo 60  cmp_summarize_msgs
-:: 10:03 /mo 60  cmp_mail_check_status
-:: 10:04 /mo 20  cmp_schedule_update         (→ :24 :44 반복)
-:: 10:06 /mo 60  cmp_mail_check_url
+:: 09:57 /mo 60  campaign_mail_search_to_msg
+:: 10:01 /mo 20  campaign_mail_check              (→ :21 :41 반복)  ← 일정 + Monitoring 둘 다 수집
+:: 10:02 /mo 60  campaign_summarize_msgs
+:: 10:03 /mo 60  campaign_mail_check_status
+:: 10:04 /mo 20  campaign_schedule_update         (→ :24 :44 반복)
+:: 10:06 /mo 60  campaign_mail_check_url
 
-schtasks /create /tn cmp_mail_check /tr "\"C:\Python3xx\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\your_folder\your_workspace\260324_schedule\check_mail_attachment_byname.py\"" /sc minute /mo 20 /st 10:01 /ed 2026/10/15 /it /f
+schtasks /create /tn campaign_mail_check /tr "\"C:\Python314\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\work\campaign_schedule\check_mail_attachment_byname.py\"" /sc minute /mo 20 /st 10:01 /ed 2026/10/15 /it /f
 
 :: 2026-08-07: update_schedule.py → update_schedule_summary.py 로 교체 (Summary 시트 자동 정제 포함본)
-schtasks /create /tn cmp_schedule_update /tr "\"C:\Python3xx\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\your_folder\your_workspace\260324_schedule\update_schedule_summary.py\"" /sc minute /mo 20 /st 10:04 /ed 2026/10/15 /it /f
+schtasks /create /tn campaign_schedule_update /tr "\"C:\Python314\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\work\campaign_schedule\update_schedule_summary.py\"" /sc minute /mo 20 /st 10:04 /ed 2026/10/15 /it /f
 
-schtasks /create /tn cmp_mail_check_status /tr "\"C:\Python3xx\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\your_folder\your_workspace\260324_schedule\check_mail_attachment_status.py\"" /sc minute /mo 60 /st 10:03 /ed 2026/10/15 /it /f
+schtasks /create /tn campaign_mail_check_status /tr "\"C:\Python314\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\work\campaign_schedule\check_mail_attachment_status.py\"" /sc minute /mo 60 /st 10:03 /ed 2026/10/15 /it /f
 
-schtasks /create /tn cmp_mail_search_to_msg /tr "\"C:\Python3xx\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\your_folder\your_workspace\260324_schedule\mail_search_to_msg_onlymsg.py\"" /sc minute /mo 60 /st 09:57 /ed 2026/10/15 /it /f
+schtasks /create /tn campaign_mail_search_to_msg /tr "\"C:\Python314\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\work\campaign_schedule\mail_search_to_msg_onlymsg.py\"" /sc minute /mo 60 /st 09:57 /ed 2026/10/15 /it /f
 
-schtasks /create /tn cmp_summarize_msgs /tr "\"C:\Python3xx\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\your_folder\your_workspace\260324_schedule\summarize_msgs.py\"" /sc minute /mo 60 /st 10:02 /ed 2026/10/15 /it /f
+schtasks /create /tn campaign_summarize_msgs /tr "\"C:\Python314\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\work\campaign_schedule\summarize_msgs.py\"" /sc minute /mo 60 /st 10:02 /ed 2026/10/15 /it /f
 
-schtasks /create /tn cmp_mail_check_url /tr "\"C:\Python3xx\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\your_folder\your_workspace\260324_schedule\check_mail_attachment_url.py\"" /sc minute /mo 60 /st 10:06 /ed 2026/10/15 /it /f
+schtasks /create /tn campaign_mail_check_url /tr "\"C:\Python314\pythonw.exe\" \"C:\Users\user_name\OneDrive - company_name\user_id\work\campaign_schedule\check_mail_attachment_url.py\"" /sc minute /mo 60 /st 10:06 /ed 2026/10/15 /it /f
+
+:: 2026-08-20: CAMPAIGN NAME Monitoring 수집은 check_mail_attachment_byname.py 의 RULES 로 흡수됨.
+::   → 별도 작업(campaign_mail_check_monitoring) 등록 불필. 이미 등록했다면 삭제할 것:
+:: schtasks /delete /tn campaign_mail_check_monitoring /f
 
 :: Python 경로 확인 방법: cmd에서 → where pythonw
-:: 예) C:\Python3xx\pythonw.exe  또는  C:\Users\user_name\AppData\Local\Programs\Python\Python312\pythonw.exe
+:: 예) C:\Python314\pythonw.exe  또는  C:\Users\user_name\AppData\Local\Programs\Python\Python312\pythonw.exe
 
 :: ─── 배터리 모드 허용 (위 schtasks 등록 후 실행) ───
 :: schtasks는 배터리 조건을 직접 설정할 수 없으므로 별도 적용 필요
 
 :: [cmd/bat에서 실행] powershell.exe 래퍼 사용
 
-powershell -Command "$names = 'cmp_mail_check','cmp_schedule_update','cmp_mail_check_status','cmp_mail_search_to_msg','cmp_summarize_msgs','cmp_mail_check_url'; foreach ($n in $names) { $t = Get-ScheduledTask -TaskName $n; $t.Settings.DisallowStartIfOnBatteries = $false; $t.Settings.StopIfGoingOnBatteries = $false; Set-ScheduledTask -InputObject $t }"
+powershell -Command "$names = 'campaign_mail_check','campaign_schedule_update','campaign_mail_check_status','campaign_mail_search_to_msg','campaign_summarize_msgs','campaign_mail_check_url'; foreach ($n in $names) { $t = Get-ScheduledTask -TaskName $n; $t.Settings.DisallowStartIfOnBatteries = $false; $t.Settings.StopIfGoingOnBatteries = $false; Set-ScheduledTask -InputObject $t }"
 
 :: [PowerShell 창에서 직접 실행] 래퍼 없이 한 줄 (더 빠름, 권장)
 :: ⚠ PS 창에서 위 `powershell -Command "..."` 형태를 쓰면 바깥 PS가 $names·$n·$t를
 ::   자기 변수로 먼저 치환(빈 값)해버려 "foreach 뒤에 변수 이름이 없습니다" 오류 발생
 
-$names = 'cmp_mail_check','cmp_schedule_update','cmp_mail_check_status','cmp_mail_search_to_msg','cmp_summarize_msgs','cmp_mail_check_url'; foreach ($n in $names) { $t = Get-ScheduledTask -TaskName $n; $t.Settings.DisallowStartIfOnBatteries = $false; $t.Settings.StopIfGoingOnBatteries = $false; Set-ScheduledTask -InputObject $t }
+$names = 'campaign_mail_check','campaign_schedule_update','campaign_mail_check_status','campaign_mail_search_to_msg','campaign_summarize_msgs','campaign_mail_check_url'; foreach ($n in $names) { $t = Get-ScheduledTask -TaskName $n; $t.Settings.DisallowStartIfOnBatteries = $false; $t.Settings.StopIfGoingOnBatteries = $false; Set-ScheduledTask -InputObject $t }
