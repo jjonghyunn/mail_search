@@ -61,11 +61,12 @@ CAMPAIGN_BASE = Path(
     r"\01. SCHEDULE"
 )
 
-# 고객 첨부(일정 · Monitoring)를 받는 폴더. update_schedule_summary.py 가 이 폴더의
-# xlsx 중 최신 1개를 일정 소스로 집어간다.
-# ⚠ 그래서 Monitoring 이 xlsx 로 오는 회차(260804 류)에 일정 소스로 오선택될 수 있다.
-#    방어는 update_schedule*.py 의 `SOURCE_NAME_KEYS`(이름에 schedule/캠페인/일정 중
-#    하나가 있어야 소스 후보) 가 담당한다 — 그 상수를 지우면 이 배치가 위험해진다.
+# 고객 첨부(일정 · Monitoring)를 받는 폴더. update_schedule_summary.py 가 이 폴더에서
+# 최신 1개를 일정 소스로 집어간다 — 확장자(.xlsx/.xlsb)·제목 형태와 무관하게 **가장 늦게 도착한 것**.
+# 2026-08-20: 고객이 일정 내용을 Qualitative Monitoring 파일로 보내기 시작해, 소비 쪽
+#    (update_schedule_summary.py) 의 SOURCE_EXTS 에 .xlsb, SOURCE_NAME_KEYS 에 monitoring 을 추가했다.
+#    즉 Monitoring 파일은 더 이상 '배제 대상' 이 아니라 정상적인 일정 소스 후보다.
+#    ⚠ 두 룰의 마커·attachment_keys 분리는 그대로 유지할 것 (아래 RULES 주석 참조).
 CUSTOMER_FILE_FOLDER = CAMPAIGN_BASE / "1.고객 법인 일정 파일"
 
 # 한 첨부가 여러 룰에 걸릴 때 처리 방식

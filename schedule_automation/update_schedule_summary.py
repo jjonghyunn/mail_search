@@ -2,6 +2,8 @@
 update_schedule_summary.py   [CAMPAIGN NAME 폴더 전용 — update_schedule.py 의 정제 통합판]
 2026-08-11  Jonghyun Park w/ Claude
 2026-08-19  Jonghyun Park w/ Claude  — SKIP 판정을 마커 대신 Auto 파일 실제 저장내용으로 전환
+2026-08-20  Jonghyun Park w/ Claude  — xlsb 소스 허용(Excel COM 변환) + Monitoring 파일을 일정 소스로 인정
+2026-08-20  Jonghyun Park w/ Claude  — 변환본(.xlsx + 일정 시트)을 소스 폴더에 상시 생성 + 실행 상태 txt
 
 update_schedule.py 와의 차이 = **Summary 시트 자동 정제 단계가 앞에 붙었다**.
 
@@ -11,15 +13,20 @@ update_schedule.py 와의 차이 = **Summary 시트 자동 정제 단계가 앞�
       update_schedule.py 가 돌아간다. 그 수동 단계를 이 스크립트가 대신한다.
 
 흐름:
- 1. `1.고객 법인 일정 파일/` 폴더에서 최신 파일 자동 선택 (update_schedule.py 와 동일 정렬 규칙)
+ 1. `1.고객 법인 일정 파일/` 폴더에서 최신 파일 자동 선택 (xlsx·xlsb 모두 후보, 도착순 단일 축)
+    — xlsb 는 openpyxl 이 못 읽으므로 Excel COM 으로 **같은 폴더에 같은 이름의 xlsx 변환본**을 떠서 읽는다
  2. Summary 시트 정제 → 일정 13열 데이터 생성 (**메모리 처리 — 소스 파일 미변경**)
  3. **Auto 파일에 그 결과가 실제로 저장돼 있는지 확인** → 이미 반영돼 있으면 SKIP
     (마커/로그가 아니라 파일 내용으로 판정 — 아래 '재실행 판정' 참조)
- 4. 소스 xlsx 에 `일정` 시트로 기록 (WRITE_SHEET_TO_SOURCE=True 일 때)
+ 4. `일정` 시트 기록 (WRITE_SHEET_TO_SOURCE=True 일 때)
+    — xlsx 소스: 소스 파일에 기록 (Auto 갱신이 필요할 때만)
+    — xlsb 소스: **변환본에 기록하고, Auto 갱신이 SKIP 돼도 항상 만든다**
+      (고객이 xlsb 만 보내는 회차에 사람이 열어볼 xlsx·일정 시트가 폴더에 없어서)
  5. 직전 소스 파일도 같은 정제 → 전후 비교(노란 음영)용
  6. Auto 파일 `고객법인일정파일` 시트 B2:N999 클리어 후 **B5 부터** 붙여넣기
     (B5 = Region 라벨행, B6 = 헤더행, B7~ = 데이터)
  7. Excel COM 으로 전체 재계산 후 저장 → **저장 직후 재검증** → 통과했을 때만 마커 기록
+ 8. 실행 결과를 소스 폴더의 `_schedule_update_status.txt` 에 기록 (마지막 실행 1회분, 사람 확인용)
 
 재실행 판정 (2026-08-19 변경):
   종전엔 마커(campaign_schedule_last_source.txt)가 최신이면 무조건 SKIP 했다. 그런데 저장이 끝난 뒤
@@ -50,6 +57,8 @@ update_schedule.py 와의 차이 = **Summary 시트 자동 정제 단계가 앞�
 import os
 import re
 import time
+import shutil
+import tempfile
 import datetime as dt
 from pathlib import Path
 import openpyxl
@@ -69,17 +78,31 @@ BASE = Path(
 )
 
 SOURCE_FOLDER    = BASE / "1.고객 법인 일정 파일"
+# 소스로 인정할 확장자. 고객이 회차마다 xlsx/xlsb 를 오락가락 보낸다.
+# ⚠ 종전엔 glob("*.xlsx") 가 곧 xlsb 배제 장치였다 — 이제 확장자로 거르지 않는다.
+SOURCE_EXTS = (".xlsx", ".xlsb")
+
 # 일정 소스로 인정할 파일명 키워드 (소문자 매칭, 하나라도 포함되면 후보).
-# check_mail_attachment_byname.py 가 Monitoring 첨부도 같은 폴더에 저장하므로,
-# 그게 xlsx 로 오는 회차(260804 류)에 일정 소스로 오선택되는 걸 막는 안전장치.
-# ⚠ 삭제하지 말 것 — Monitoring 파일이 xlsb 일 땐 glob 이 걸러주지만 xlsx 는 안 걸러진다.
-SOURCE_NAME_KEYS = ["schedule", "캠페인", "일정"]
+# 2026-08-20: "monitoring" 추가 — 고객이 일정 내용을 Qualitative Monitoring 파일로 보내기 시작했다
+#             (`26 CAMPAIGN NAME Qualitative Monitoring_260819_shared.xlsb`). 종전 3개 키워드로는 이름에서도,
+#             glob("*.xlsx") 에서도 탈락해 최신본을 통째로 놓쳤다.
+# ⚠ 이제 이 상수는 '무관한 파일 배제' 용 화이트리스트이지 Monitoring 배제 장치가 아니다.
+SOURCE_NAME_KEYS = ["schedule", "캠페인", "일정", "monitoring"]
 TARGET_SHEET     = "고객법인일정파일"
 LAST_SOURCE_FILE = BASE / "campaign_schedule_last_source.txt"  # 마커: Auto 파일과 같은 폴더 (프로젝트별 독립 관리)
 
 # ─── Excel COM 재계산 ────────────────────────────────────────
 COM_RETRIES        = 2   # Excel 인스턴스가 도중에 죽었을 때(RPC_E_DISCONNECTED) 새 인스턴스로 재시도할 횟수
 COM_RETRY_WAIT_SEC = 5   # 재시도 전 대기 (죽은 프로세스가 정리될 시간)
+
+# ─── xlsb 변환본 · 실행 상태 ─────────────────────────────────
+# 변환본은 **소스 폴더 직속**에 원본과 같은 이름(.xlsx)으로 남긴다 — 고객이 xlsb 만 보내는 회차에
+# 사람이 열어볼 xlsx 와 `일정` 시트가 폴더에 하나도 없기 때문. Auto 갱신이 SKIP 돼도 항상 만든다.
+# ⚠ 같은 이름의 .xlsb 가 있는 .xlsx 는 '변환본'으로 간주해 **소스 후보에서 제외**한다
+#    (is_converted_twin). 안 그러면 다음 실행이 변환본을 소스로 집는다 — 도착시각이 같고
+#    ext tiebreak 이 xlsx 우선이라 확정적으로 뒤집힌다.
+XLSB_WORK_DIR = Path(tempfile.gettempdir()) / "campaign_schedule_xlsb_work"   # Excel 작업용 짧은 경로 (아래 ⚠ 참조)
+STATUS_FILE   = SOURCE_FOLDER / "_schedule_update_status.txt"            # 마지막 실행 1회분 상태
 
 # ─── 정제 ────────────────────────────────────────────────────
 CAMPAIGN_YEAR         = 2026        # 기간 텍스트 'M/D' 에 붙일 연도
@@ -133,6 +156,7 @@ PERIOD_SEP   = "~"                                  # 전각 ～ / ∼ 도 이 �
 PERIOD_ALTS  = ("～", "∼", "〜")
 MD_PATTERN   = re.compile(r"^\s*(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*$")   # 'M/D' (. - 구분자도 허용)
 ROW_LEN      = SRC_MAX_COL - SRC_MIN_COL + 1        # 13
+XL_OPENXML_WORKBOOK = 51                            # Excel SaveAs FileFormat (xlsx)
 
 
 # ── 최신 파일 정렬 키 ────────────────────────────────────────
@@ -229,7 +253,11 @@ def latest_file_key(f: Path):
     ms = re.search(r"_(\d{1,5})$", core)
     suffix = int(ms.group(1)) if ms else 0
 
-    return (arrive, doc_date, doc_hhmm, ver_float, ver_int, suffix)
+    # 같은 메일에 같은 이름의 xlsx/xlsb 가 동봉되면 여기까지 전부 동점이라 순서가
+    # 파일시스템 순서에 좌우된다 → 내용이 같다면 변환이 필요 없는 xlsx 를 택한다.
+    ext_rank = 1 if f.suffix.lower() == ".xlsx" else 0
+
+    return (arrive, doc_date, doc_hhmm, ver_float, ver_int, suffix, ext_rank)
 
 
 # ── Summary 정제 ─────────────────────────────────────────────
@@ -290,11 +318,106 @@ def find_summary_layout(ws):
     return header_row, cols
 
 
+def _com_convert_to_xlsx(src: Path, dest: Path) -> None:
+    """Excel COM 으로 src(xlsb) → dest(xlsx) 변환. 실패 시 예외를 올린다.
+
+    ⚠ **Excel 에는 짧은 임시 경로만 넘긴다** — 복사 → 변환 → 되옮기기 3단계인 이유.
+      캠페인 폴더가 깊어서 소스도 dest 도 전체 경로가 264자(`MAX_PATH` 260 초과)다. 원본 경로를
+      그대로 넘기면 Excel 이 `Workbooks 클래스 중 Open 메서드에 오류가 있습니다`(0x800A03EC) 로 거부한다.
+      Python 은 같은 경로를 읽고 쓰는 데 문제가 없어서(롱패스) 원인이 잘 안 보인다 — 인자 조합·파일 손상
+      문제로 오인하기 쉽다 (2026-08-20 실측). Excel 공식 한도는 경로+파일명 218자라 Auto 파일(223자)도
+      아슬아슬하다 — 캠페인 폴더명이 한 번만 더 길어지면 recalc_and_save 쪽도 같은 이유로 깨진다.
+
+    ※ DispatchEx = 전용 인스턴스 (recalc_and_save 와 같은 이유 — 이미 떠 있는 Excel 에 붙으면
+      그쪽이 먼저 종료될 때 Quit 단계에서 죽는다).
+    ※ ReadOnly=True + UpdateLinks=0 — 사본이라 원본은 어차피 안전하지만, 외부링크 갱신 팝업을 막는다.
+    """
+    XLSB_WORK_DIR.mkdir(parents=True, exist_ok=True)
+    work_src  = XLSB_WORK_DIR / src.name
+    work_dest = work_src.with_suffix(".xlsx")
+    shutil.copy2(src, work_src)
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False     # 덮어쓰기 확인 팝업 방지 (스케줄러 실행 대비)
+        try:
+            wb_com = excel.Workbooks.Open(str(work_src), UpdateLinks=0, ReadOnly=True)
+            try:
+                wb_com.SaveAs(str(work_dest), FileFormat=XL_OPENXML_WORKBOOK)
+            finally:
+                # 지연 바인딩이면 `.Close` 속성 접근만으로 COM 메서드가 실행되고 bool 을 돌려준다
+                # → 이어지는 () 가 TypeError (recalc_and_save 의 같은 주석 참조).
+                try:
+                    wb_com.Close(SaveChanges=False)
+                except TypeError:
+                    pass
+        finally:
+            try:
+                excel.Quit()
+            except Exception as e:
+                print(f"[알림] Excel 종료 중 무시된 예외: {e}")
+
+        shutil.copy2(work_dest, dest)   # 긴 경로로 되옮기기는 Python 이 한다 (copy2 = 덮어쓰기 OK)
+    finally:
+        # Dispatch 자체가 실패해도 작업본은 반드시 지운다
+        for f in (work_src, work_dest):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def converted_twin(path: Path) -> Path:
+    """xlsb 소스에 대응하는 변환본 경로 — **같은 폴더, 같은 이름, .xlsx**."""
+    return path.with_suffix(".xlsx")
+
+
+def is_converted_twin(f: Path) -> bool:
+    """이 .xlsx 가 같은 이름 xlsb 의 변환본인가 → 소스 후보에서 제외해야 한다.
+
+    고객이 같은 회차에 진짜 xlsx·xlsb 를 둘 다 보내도 내용은 같으므로 xlsb 쪽만 써도 무해하다.
+    """
+    return f.suffix.lower() == ".xlsx" and f.with_suffix(".xlsb").exists()
+
+
+def ensure_openpyxl_readable(path: Path) -> Path:
+    """openpyxl 이 읽을 수 있는 경로를 돌려준다 (xlsx 는 그대로, xlsb 는 변환본 경로).
+
+    openpyxl 은 xlsb 를 아예 못 읽는다. 새 의존성(pyxlsb)을 들이는 대신, 이 스크립트가 어차피
+    쓰고 있는 Excel COM 으로 xlsx 변환본을 떠서 기존 정제 경로를 그대로 태운다.
+
+    변환본이 소스보다 새것이면 재변환하지 않는다 — SKIP 판정에도 정제 결과가 필요해서,
+    이 가드가 없으면 20분마다 도는 스케줄러가 '변경 없음' 회차에도 매번 Excel 을 띄운다.
+    (`일정` 시트를 써 넣으면 변환본 mtime 이 더 새것이 되므로 판정은 계속 유효하다.)
+    """
+    if path.suffix.lower() != ".xlsb":
+        return path
+
+    dest = converted_twin(path)
+    if dest.exists() and dest.stat().st_mtime >= path.stat().st_mtime:
+        return dest
+
+    for attempt in range(1, COM_RETRIES + 1):
+        try:
+            _com_convert_to_xlsx(path, dest)
+            break
+        except pywintypes.com_error as e:
+            print(f"[재시도 {attempt}/{COM_RETRIES}] xlsb → xlsx 변환 실패: {e}")
+            if attempt == COM_RETRIES:
+                raise
+            time.sleep(COM_RETRY_WAIT_SEC)
+
+    print(f"[xlsb 변환] {path.name} → {dest.name}")
+    return dest
+
+
 def build_schedule_rows(xlsx_path: Path) -> tuple[list, list]:
     """소스 xlsx 의 Summary 를 정제해 (헤더 2행, 데이터 행들) 반환.
 
     각 행은 B~N 13칸 리스트. 헤더 2행 = [Region 라벨행, 컬럼 헤더행].
+    소스가 xlsb 면 여기서 xlsx 변환본으로 바꿔 읽는다 (소스 파일 자체는 무변경).
     """
+    xlsx_path = ensure_openpyxl_readable(xlsx_path)
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
     ws = wb[SUMMARY_SHEET] if SUMMARY_SHEET in wb.sheetnames else wb.worksheets[0]
     header_row, cols = find_summary_layout(ws)
@@ -310,16 +433,16 @@ def build_schedule_rows(xlsx_path: Path) -> tuple[list, list]:
         if subs in (None, "") and country in (None, ""):
             continue                                    # 데이터 행 아님
 
-        epp_start, epp_end = parse_period(ws.cell(r, cols["b2b"]).value)
+        b2b_start, b2b_end = parse_period(ws.cell(r, cols["b2b"]).value)
         b2c_start, b2c_end = parse_period(ws.cell(r, cols["b2c"]).value)
-        participation = "O" if any((epp_start, epp_end, b2c_start, b2c_end)) else None
+        participation = "O" if any((b2b_start, b2b_end, b2c_start, b2c_end)) else None
 
         data_rows.append([
             ws.cell(r, cols["global"]).value,   # B Global
             subs,                               # C Subs
             country,                            # D Country
             participation,                      # E Participation
-            epp_start, None, epp_end, None,     # F~I  (G/I = WEEKNUM 자리, 공백)
+            b2b_start, None, b2b_end, None,     # F~I  (G/I = WEEKNUM 자리, 공백)
             b2c_start, None, b2c_end, None,     # J~M  (K/M = WEEKNUM 자리, 공백)
             ws.cell(r, cols["remark"]).value,   # N note
         ])
@@ -328,7 +451,7 @@ def build_schedule_rows(xlsx_path: Path) -> tuple[list, list]:
     return [label_row, list(SCHED_HEADER)], data_rows
 
 
-def write_schedule_sheet(xlsx_path: Path, label_rows: list, data_rows: list) -> None:
+def write_schedule_sheet(xlsx_path: Path, label_rows: list, data_rows: list) -> bool:
     """소스 xlsx 에 정제 결과를 `일정` 시트로 기록 (**없을 때만** 새로 만든다).
 
     2026-08-20: 기존 시트가 있으면 지우고 다시 쓰던 것을 **그대로 두는** 방식으로 변경.
@@ -337,19 +460,27 @@ def write_schedule_sheet(xlsx_path: Path, label_rows: list, data_rows: list) -> 
 
     파일 수정 시각(mtime)은 원래대로 되돌린다 — 마커가 '메일로 받은 버전'을 가리키도록 유지하고,
     우리가 쓴 것 때문에 다음 실행이 재처리로 오인하지 않게.
+
+    2026-08-20: xlsb 소스는 건너뛴다 — openpyxl 은 xlsb 저장이 불가하고, 변환 캐시에 써봐야
+    다음 회차에 버려지는 임시파일이라 의미가 없다.
     """
+    if xlsx_path.suffix.lower() != ".xlsx":
+        # xlsb 원본에는 못 쓴다. 대신 호출부가 **변환본(.xlsx)** 을 넘겨 거기에 기록한다.
+        print(f"[정제 시트] xlsb 원본에는 '{SCHEDULE_SHEET}' 시트를 쓸 수 없습니다 — {xlsx_path.name}")
+        return False
+
     orig_stat = xlsx_path.stat()
     try:
         wb = openpyxl.load_workbook(xlsx_path, data_only=False)
     except PermissionError:
         print(f"[알림] 소스 파일이 사용 중이라 '{SCHEDULE_SHEET}' 시트 기록을 건너뜁니다: {xlsx_path.name}")
-        return
+        return False
 
     # 이미 있으면 손대지 않는다 (수기 편집·고객 원본 보존). 저장도 안 하므로 파일 무변경.
     if SCHEDULE_SHEET in wb.sheetnames:
         wb.close()
         print(f"[정제 시트] '{SCHEDULE_SHEET}' 시트가 이미 있어 그대로 둡니다 — {xlsx_path.name}")
-        return
+        return True
 
     ws = wb.create_sheet(SCHEDULE_SHEET, 0)
 
@@ -364,12 +495,13 @@ def write_schedule_sheet(xlsx_path: Path, label_rows: list, data_rows: list) -> 
         wb.save(xlsx_path)
     except PermissionError:
         print(f"[알림] 소스 파일 저장 실패(사용 중) — '{SCHEDULE_SHEET}' 시트 기록 생략: {xlsx_path.name}")
-        return
+        return False
     finally:
         wb.close()
 
     os.utime(xlsx_path, (orig_stat.st_atime, orig_stat.st_mtime))
     print(f"[정제 시트] '{SCHEDULE_SHEET}' 시트 신규 생성 ({len(data_rows)}행) — {xlsx_path.name}")
+    return True
 
 
 # ── Auto 파일 저장상태 확인 ─────────────────────────────────
@@ -443,6 +575,37 @@ def target_is_saved(output_file: Path, source_name: str, src_data: list) -> tupl
     return True, ""
 
 
+# ── 실행 상태 기록 ──────────────────────────────────────────
+def write_status(result: str, detail: str = "", rows: int | None = None) -> None:
+    """소스 폴더에 **마지막 실행 1회분** 상태를 남긴다 (사람이 열어 확인하는 용도).
+
+    스케줄러로 돌면 콘솔 출력이 아무데도 안 남아서, 갱신이 됐는지 SKIP 인지 실패인지 알 방법이
+    Auto 파일을 직접 열어보는 것뿐이었다. 그 확인을 파일 하나로 대신한다.
+    ※ `.txt` 라 SOURCE_EXTS 에 안 걸려 소스 후보를 오염시키지 않는다.
+    ※ 전역(source_file 등)은 호출 시점에 이미 정해져 있다 — 정의 위치보다 뒤에서만 호출할 것.
+    """
+    lines = [
+        "이 파일은 update_schedule_summary.py 가 매 실행마다 덮어씁니다 (마지막 실행 1회분).",
+        "",
+        f"실행 시각 : {dt.datetime.now():%Y-%m-%d %H:%M:%S}",
+        f"결과      : {result}",
+    ]
+    if detail:
+        lines.append(f"상세      : {detail}")
+    lines.append(f"소스 파일 : {source_file.name}")
+    if source_work is not None and source_work != source_file:
+        mark = "일정 시트 O" if schedule_sheet_ok else "일정 시트 X"
+        lines.append(f"변환본    : {source_work.name} ({mark})")
+    lines.append(f"Auto 파일 : {output_file.name}")
+    if rows is not None:
+        lines.append(f"데이터    : {rows}행")
+
+    try:
+        STATUS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as e:
+        print(f"[알림] 상태 파일 기록 실패 ({type(e).__name__}: {e})")
+
+
 # ── Auto 파일 자동 탐색 ──────────────────────────────────────
 auto_files = list(BASE.glob("*Auto*.xlsx"))
 if not auto_files:
@@ -451,29 +614,47 @@ output_file = auto_files[0]
 print(f"[업데이트 대상] {output_file.name}")
 
 # ── 소스 폴더에서 최신 파일 선택 ────────────────────────────
-# 이름에 SOURCE_NAME_KEYS 가 하나라도 있는 xlsx 만 소스 후보 (Monitoring xlsx 배제)
-xlsx_files = sorted(
-    (f for f in SOURCE_FOLDER.glob("*.xlsx")
-     if any(k in f.name.lower() for k in SOURCE_NAME_KEYS)),
+# SOURCE_EXTS 확장자 + 이름에 SOURCE_NAME_KEYS 가 하나라도 있는 파일만 소스 후보.
+# 확장자(.xlsx/.xlsb)도 제목 형태(_vN/_shared)도 순위에 관여하지 않는다 — 오직 도착순(latest_file_key).
+source_files = sorted(
+    (f for f in SOURCE_FOLDER.iterdir()
+     if f.is_file()
+     and f.suffix.lower() in SOURCE_EXTS
+     and not f.name.startswith("~$")                     # Excel 잠금 임시파일
+     and not is_converted_twin(f)                       # 우리가 만든 xlsb 변환본
+     and any(k in f.name.lower() for k in SOURCE_NAME_KEYS)),
     key=latest_file_key,
 )
-if not xlsx_files:
+if not source_files:
     raise FileNotFoundError(
-        f"소스 폴더에 일정 xlsx 가 없습니다 (이름에 {SOURCE_NAME_KEYS} 중 하나 필요): {SOURCE_FOLDER}")
+        f"소스 폴더에 일정 파일이 없습니다 "
+        f"(확장자 {SOURCE_EXTS} + 이름에 {SOURCE_NAME_KEYS} 중 하나 필요): {SOURCE_FOLDER}")
 
-source_file = xlsx_files[-1]
+source_file = source_files[-1]
 print(f"[소스 파일] {source_file.name}")
 
 # ── Summary 정제 (메모리 — 소스 파일 미변경) ─────────────────
 # ※ OneDrive 동기화 중이면 잠깐 잠길 수 있다. 작업 스케줄러에 '실패'로 남기지 말고
 #   조용히 물러나 다음 실행(20분 뒤)이 재시도하게 한다.
+source_work = source_file          # xlsb 면 아래에서 변환본 경로로 바뀐다 (write_status 가 참조)
+schedule_sheet_ok = False
+
 try:
-    label_rows, data_rows = build_schedule_rows(source_file)
-except OSError as e:
+    source_work = ensure_openpyxl_readable(source_file)
+    label_rows, data_rows = build_schedule_rows(source_work)
+except (OSError, pywintypes.com_error) as e:
+    # com_error = xlsb → xlsx 변환 실패 (Excel 이 죽었거나 파일이 잠김). 이것도 재시도 대상이다.
     print(f"[SKIP] 소스 파일을 읽을 수 없습니다 ({type(e).__name__}). 다음 실행 시 재시도합니다: {source_file.name}")
+    write_status("실패", f"소스 파일을 읽을 수 없음 ({type(e).__name__})")
     exit(0)
 src_data = label_rows + data_rows
 print(f"[정제 완료] 데이터 {len(data_rows)}행 (+ 헤더 {len(label_rows)}행)")
+
+# ── 변환본에 `일정` 시트 — Auto 갱신이 SKIP 돼도 **항상** 만든다 ──
+# 고객이 xlsb 만 보내는 회차엔 폴더에 사람이 열어볼 xlsx 도 `일정` 시트도 없다.
+# 그래서 이 단계만 SKIP 판정 **앞**에 둔다 (xlsx 소스는 종전대로 갱신이 필요할 때만 쓴다).
+if WRITE_SHEET_TO_SOURCE and source_work != source_file:
+    schedule_sheet_ok = write_schedule_sheet(source_work, label_rows, data_rows)
 
 # ── 재실행 판정 — 마커(로그)가 아니라 Auto 파일에 실제 저장된 내용으로 ──
 # ※ 마커는 '처리 완료' 기록·경고용으로만 남긴다. 판정에 쓰면 저장이 유실됐을 때 영원히 SKIP 된다.
@@ -488,6 +669,7 @@ if saved:
     if not marker_says_done:
         LAST_SOURCE_FILE.write_text(current_marker, encoding="utf-8")
         print("[알림] 내용은 최신이라 마커만 뒤늦게 동기화했습니다.")
+    write_status("이미 반영됨 (SKIP)", rows=len(data_rows))
     exit(0)
 
 if marker_says_done:
@@ -508,8 +690,8 @@ def compare_key(row_data, seen: dict):
 
 
 prev_data = {}
-if len(xlsx_files) >= 2:
-    prev_file = xlsx_files[-2]
+if len(source_files) >= 2:
+    prev_file = source_files[-2]
     try:
         _, prev_rows = build_schedule_rows(prev_file)
     except Exception as e:
@@ -530,6 +712,7 @@ try:
     tgt_wb = openpyxl.load_workbook(output_file)
 except PermissionError:
     print(f"[SKIP] 파일이 사용 중입니다. 다음 실행 시 재시도합니다: {output_file.name}")
+    write_status("실패", "Auto 파일이 사용 중 (다음 실행 시 재시도)", rows=len(data_rows))
     exit(0)
 
 if TARGET_SHEET not in tgt_wb.sheetnames:
@@ -585,6 +768,7 @@ try:
 except PermissionError:
     tgt_wb.close()
     print(f"[SKIP] 저장 중 파일이 잠겼습니다. 다음 실행 시 재시도합니다: {output_file.name}")
+    write_status("실패", "저장 중 Auto 파일이 잠김 (다음 실행 시 재시도)", rows=len(data_rows))
     exit(0)
 
 # Excel로 열어서 전체 재계산 후 저장 (FILTER/SORT 등 동적 배열 함수 반영)
@@ -631,6 +815,8 @@ for attempt in range(1, COM_RETRIES + 1):
             print(f"        {output_file.name} 은 지금 **수식 캐시가 빈 상태**입니다 — "
                   f"Excel 로 한 번 열었다가 저장하거나 이 스크립트를 다시 실행하세요.")
             print(f"        (마커를 기록하지 않았으므로 다음 실행이 같은 소스를 재처리합니다)")
+            write_status("실패", "Excel 재계산·저장 실패 — Auto 파일의 수식 캐시가 빈 상태",
+                         rows=len(data_rows))
             raise
         time.sleep(COM_RETRY_WAIT_SEC)
         continue
@@ -641,8 +827,10 @@ for attempt in range(1, COM_RETRIES + 1):
     if ok:
         LAST_SOURCE_FILE.write_text(current_marker, encoding="utf-8")
         print(f"[완료] {output_file.name} 저장 완료")
+        write_status("갱신 완료", rows=len(data_rows))
     else:
         print(f"[경고] 저장 직후 검증 실패 — {why}")
+        write_status("경고 — 저장이 되돌려짐", why, rows=len(data_rows))
         print("        다른 프로그램(Excel/OneDrive)이 파일을 되돌렸을 수 있습니다.")
         print("        마커를 기록하지 않았으므로 다음 실행이 다시 처리합니다.")
     break
