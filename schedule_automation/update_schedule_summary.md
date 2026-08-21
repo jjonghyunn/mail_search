@@ -1,5 +1,5 @@
 # update_schedule_summary.py  
-<sub>2026-08-20  Jonghyun Park w/ Claude</sub>  
+<sub>2026-08-21  Jonghyun Park w/ Claude</sub>  
 
 `update_schedule.py` 의 사본 + **Summary 시트 자동 정제 단계**를 앞에 붙인 버전.
 같은 폴더의 `README.md`(= `update_schedule.py` 문서)와 겹치는 부분(최신 파일 선택 규칙, Auto 파일 하류 체인,
@@ -33,11 +33,21 @@
 5. 직전 소스 파일도 같은 정제 → 전후 비교(노란 음영)용
 6. Auto 파일 `고객법인일정파일` 시트 **B2:N999 클리어 후 B5 부터** 붙여넣기
 7. Excel COM 으로 `CalculateFull()` → 저장 → **저장 직후 `target_is_saved()` 재검증** → 통과했을 때만 마커 기록
-8. 실행 결과를 소스 폴더의 `_schedule_update_status.txt` 에 기록 (**마지막 실행 1회분**, 덮어쓰기)
+   - 그 앞에 `is_locked()` 로 Auto 파일 잠김을 먼저 본다 — 잠겨 있으면 **Excel 을 아예 안 띄우고** 물러난다
+     (아래 'Excel 팝업 차단' 참조). 이때 Auto 파일은 수식 캐시가 빈 상태라 상세 사유에 그 사실을 남긴다.
+   - 재검증은 **읽기 실패(잠김) 사유일 때만** `VERIFY_RETRIES`(3회 × 2초) 재시도한다.
+     Excel 이 막 놓은 파일을 곧바로 읽으면 `PermissionError` 가 나 '저장이 되돌려짐' 으로 오판된다
+     (2026-08-20 실제 발생). 값 불일치·잔재는 재시도해도 그대로라 즉시 판정.
+8. 실행 결과를 소스 폴더의 `_schedule_update_status.txt` 에 기록 — **파일 1개**,
+   상단 `── 마지막 실행` 블록 + 하단 `── 실행 이력` **누적**
    - 스케줄러로 돌면 콘솔이 아무데도 안 남아, 갱신됐는지 SKIP 인지 실패인지 확인할 방법이
      Auto 파일을 직접 열어보는 것뿐이었다. 그 확인을 파일 하나로 대신한다.
-   - 기록 항목: 실행 시각 / 결과(`갱신 완료`·`이미 반영됨 (SKIP)`·`실패`·`경고`) / 상세 사유 /
+   - 기록 항목: 실행 시각 / 결과(`갱신 완료`·`이미 반영됨 (SKIP)`·`실패`·`실패(예외)`·`경고`) / 상세 사유 /
      소스 파일 / 변환본(+`일정 시트 O|X`) / Auto 파일 / 데이터 행수
+   - **이력 (2026-08-21 추가)**: 매 실행 `시각 / 결과 / 상세·행수` 한 줄을 하단에 append,
+     `STATUS_LOG_MAX_LINES`(200줄) 초과분은 오래된 것부터 잘린다. 팝업 없이 조용히 물러난 회차가
+     쌓이므로 **'언제부터 실패했는지'** 를 여기서 본다. 구분선 문자열(`STATUS_LOG_HEADER`)이
+     바뀌면 그 시점에 이력이 끊긴다.
    - `.txt` 라 `SOURCE_EXTS` 에 안 걸려 소스 후보를 오염시키지 않는다.
 
 ## 정제 룰 (Summary → 일정)
@@ -155,7 +165,10 @@
 | `SOURCE_EXTS` | `(".xlsx", ".xlsb")` | 소스로 인정할 확장자. 고객이 회차마다 오락가락 보낸다 |
 | `SOURCE_NAME_KEYS` | `["schedule", "캠페인", "일정", "monitoring"]` | 파일명에 하나라도 있어야 소스 후보 (아래 참조) |
 | `XLSB_WORK_DIR` | `%TEMP%\campaign_schedule_xlsb_work` | Excel 변환 작업용 **짧은 경로** 임시 폴더 (아래 `MAX_PATH` 참조). 매번 비운다 |
-| `STATUS_FILE` | `<소스 폴더>\_schedule_update_status.txt` | 마지막 실행 1회분 상태 |
+| `STATUS_FILE` | `<소스 폴더>\_schedule_update_status.txt` | 마지막 실행 블록 + 실행 이력(누적) — 파일 1개 |
+| `STATUS_LOG_MAX_LINES` | `200` | 상태 txt 하단 '실행 이력' 보관 줄 수 |
+| `VERIFY_RETRIES` / `VERIFY_WAIT_SEC` | `3` / `2` | 저장 직후 재검증 재시도 (**잠김 사유일 때만**) |
+| `XL_SECURITY_FORCE_DISABLE` / `XL_FEATURE_INSTALL_NONE` | `3` / `0` | Excel 팝업 차단용 (`_new_excel()`) |
 | `CAMPAIGN_YEAR` | `2026` | 기간 `M/D` 에 붙일 연도. **캠페인 해가 바뀌면 여기만 수정** |
 | `SUMMARY_SHEET` | `"Summary"` | 없으면 첫 번째 시트로 fallback |
 | `SCHEDULE_SHEET` | `"일정"` | 생성할 정제 시트명 |
@@ -186,6 +199,32 @@
 > openpyxl 라운드트립이 배열 수식 `ref` 를 고정 범위로 저장해 Excel 이 남는 칸을 `#N/A` 로 채우는 것.
 > 이 범위를 쓰는 건 `IFERROR(VLOOKUP(...))` 뿐이라 **결과에는 영향 없음**. 거슬리면 Excel 에서 `N4` 수식을
 > 지웠다 다시 입력해 동적 배열로 되돌리면 사라진다.
+
+## Excel 팝업 차단 (2026-08-21)
+
+무인(`pythonw`) 실행인데 **실패 시 Excel 대화상자가 화면에 떴다.** 모달 창이 뜨면 사람이 닫아줄 때까지
+그 Excel 인스턴스가 멈춰 서서 다음 회차까지 물리고, 고아 `EXCEL.EXE` 가 쌓인다.
+
+`DisplayAlerts = False` 만으로는 부족하다 — 그건 '저장/덮어쓰기 확인' 류만 막고
+**링크 업데이트 · 읽기전용 권장 · 매크로 보안 · 기능 설치 · '파일 사용 중'** 은 그대로 뜬다.
+그래서 4겹으로 막는다:
+
+| 층 | 무엇 | 막는 것 |
+|---|---|---|
+| ① `_new_excel()` | `AskToUpdateLinks` / `AlertBeforeOverwriting` / `EnableEvents` / `AutomationSecurity` / `FeatureInstall` 까지 전부 끈 전용 인스턴스 | 링크 갱신·매크로 보안·기능 설치·Open 이벤트 창 |
+| ② `Workbooks.Open(..., Notify=False, IgnoreReadOnlyRecommended=True, UpdateLinks=0)` | 잠긴 파일에 **알림 창 대신 `com_error`** | '파일 사용 중' 알림, '읽기 전용으로 여시겠습니까' |
+| ③ `is_locked()` 선확인 | 잠겨 있으면 **Excel 을 아예 안 띄운다** | 위 둘을 통과해도 남는 창·고아 프로세스 |
+| ④ `sys.excepthook` | 남은 예외를 받아 상태 txt 에 `실패(예외)` 로 기록만 하고 종료 | traceback 이 어디에도 안 남는 문제 |
+
+- ②·③은 겹치는 방어다 — Excel 은 파일을 **deny-write** 로 잠그므로 `Notify=False` 면 창 없이
+  읽기 전용으로 열리고 `Save()` 단계에서 `com_error` 가 난다. ③이 그 앞에서 걸러 Excel 기동 자체를 없앤다.
+- ④의 `_log_uncaught` 는 콘솔이 있으면(`sys.stderr is not None`) traceback 도 같이 찍는다 —
+  기록만 남기되 사람이 직접 돌릴 땐 원인이 보여야 한다.
+- **콘솔 인코딩 방어도 같이 넣었다** — 진행 로그의 `—`(em dash) 한 글자에 `cp949` 콘솔에서
+  `UnicodeEncodeError` 가 나 실행 전체가 죽는 걸 실측했다(2026-08-21). 시작 시
+  `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` 로 막는다(`pythonw` 면 `stdout` 이 `None`).
+- 스케줄러 `raise`(Excel 재계산 최종 실패)는 **그대로 뒀다** — 작업 스케줄러에 실패 코드를 남기는
+  유일한 신호이고, 이제 ④가 받아 창 없이 로그로 마무리한다.
 
 ## 알려진 제약
 
@@ -340,3 +379,16 @@ Set-ScheduledTask -InputObject $t
 **같이 고친 것 (3번째 대응)**: 수신일시 꼬리를 **파일명 끝에서** 떼도록 변경.
 종전 정규식은 문서날짜 *바로 뒤*에 붙은 꼬리만 읽어서 `..._20260819_shared_260819_1802` 처럼
 사이에 토큰이 끼면 `mail = 0` 이 나왔다 (1차 수정만으로는 일정 파일 케이스가 안 고쳐졌음).
+
+## 검증 기록 (2026-08-21 — Excel 팝업 차단 + 상태 txt 이력 누적)
+
+| 검증 항목 | 결과 |
+|---|---|
+| 정상 실행 (갱신 필요 상태) | `[완료] … 저장 완료` — **`경고 — 저장이 되돌려짐` 안 나옴** (재검증 재시도가 흡수) ✓ |
+| 연속 실행 2회 | 둘 다 `[SKIP] Auto 파일에 이미 반영돼 있습니다`, Excel COM 미기동 ✓ |
+| 상태 txt | 상단 '마지막 실행' 블록은 최신 1회, 하단 이력은 4줄 누적 — **파일 1개** ✓ |
+| `is_locked()` — Excel 방식(deny-write) 잠금 | `True` → Excel 기동 없이 `[SKIP]` ✓ |
+| `Open(Notify=False)` — deny-write 잠금 | **대화상자 없이** 읽기 전용으로 열림 (`Save()` 에서 `com_error` → 재시도 루프가 처리) ✓ |
+| `Open(Notify=False)` — 배타(공유 없음) 잠금 | **대화상자 없이** 즉시 `com_error` ✓ |
+| `sys.excepthook` | `UnicodeEncodeError` 실사고에서 창 없이 상태 txt 에 `실패(예외)` + 사유 기록 ✓ |
+| 콘솔 인코딩 (`cp949`) | 방어 전엔 `—` 출력에서 실행 전체가 죽음 → `reconfigure` 후 정상 ✓ |

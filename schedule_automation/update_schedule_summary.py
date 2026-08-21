@@ -4,6 +4,7 @@ update_schedule_summary.py   [CAMPAIGN NAME 폴더 전용 — update_schedule.py
 2026-08-19  Jonghyun Park w/ Claude  — SKIP 판정을 마커 대신 Auto 파일 실제 저장내용으로 전환
 2026-08-20  Jonghyun Park w/ Claude  — xlsb 소스 허용(Excel COM 변환) + Monitoring 파일을 일정 소스로 인정
 2026-08-20  Jonghyun Park w/ Claude  — 변환본(.xlsx + 일정 시트)을 소스 폴더에 상시 생성 + 실행 상태 txt
+2026-08-21  Jonghyun Park w/ Claude  — Excel 팝업 전면 차단(Notify/AskToUpdateLinks 등) + 상태 txt 이력 누적
 
 update_schedule.py 와의 차이 = **Summary 시트 자동 정제 단계가 앞에 붙었다**.
 
@@ -26,7 +27,17 @@ update_schedule.py 와의 차이 = **Summary 시트 자동 정제 단계가 앞�
  6. Auto 파일 `고객법인일정파일` 시트 B2:N999 클리어 후 **B5 부터** 붙여넣기
     (B5 = Region 라벨행, B6 = 헤더행, B7~ = 데이터)
  7. Excel COM 으로 전체 재계산 후 저장 → **저장 직후 재검증** → 통과했을 때만 마커 기록
- 8. 실행 결과를 소스 폴더의 `_schedule_update_status.txt` 에 기록 (마지막 실행 1회분, 사람 확인용)
+    (Auto 파일이 잠겨 있으면 Excel 을 아예 안 띄우고 물러난다 — 아래 '팝업 차단' 참조)
+ 8. 실행 결과를 소스 폴더의 `_schedule_update_status.txt` 에 기록
+    (상단 = 마지막 실행 블록, 하단 = 실행 이력 누적. 파일은 계속 **1개**)
+
+팝업 차단 (2026-08-21):
+  무인(pythonw) 실행이라 Excel 모달 창이 뜨면 사람이 닫을 때까지 멈춰 서서 다음 회차까지 물린다.
+  실제로 실패 시 Excel 대화상자가 화면에 떴다. `DisplayAlerts=False` 만으로는 '저장 확인' 류만
+  막히고 링크 업데이트·읽기전용 권장·매크로 보안·'파일 사용 중' 은 그대로 뜬다.
+  → ① `_new_excel()` 이 낼 수 있는 창을 전부 끄고, ② `Workbooks.Open(..., Notify=False)` 로
+    잠긴 파일에 창 대신 `com_error` 가 나게 하고, ③ 그 전에 `is_locked()` 로 걸러 Excel 을
+    아예 안 띄우고, ④ `sys.excepthook` 이 남은 예외까지 받아 **기록만** 남기고 끝낸다.
 
 재실행 판정 (2026-08-19 변경):
   종전엔 마커(campaign_schedule_last_source.txt)가 최신이면 무조건 SKIP 했다. 그런데 저장이 끝난 뒤
@@ -56,6 +67,7 @@ update_schedule.py 와의 차이 = **Summary 시트 자동 정제 단계가 앞�
 
 import os
 import re
+import sys
 import time
 import shutil
 import tempfile
@@ -66,6 +78,14 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 import win32com.client
 import pywintypes
+
+# 콘솔 인코딩(cp949)에서 '—' 같은 문자를 print 하다 UnicodeEncodeError 로 죽는 걸 막는다.
+# 2026-08-21 실제 발생 — 진행 로그 한 줄 때문에 실행 전체가 죽었다. pythonw 면 stdout 이 None.
+if sys.stdout is not None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 
 
 # ════════════════ 사용자가 바꿔야 하는 부분 ════════════════
@@ -102,7 +122,8 @@ COM_RETRY_WAIT_SEC = 5   # 재시도 전 대기 (죽은 프로세스가 정리�
 #    (is_converted_twin). 안 그러면 다음 실행이 변환본을 소스로 집는다 — 도착시각이 같고
 #    ext tiebreak 이 xlsx 우선이라 확정적으로 뒤집힌다.
 XLSB_WORK_DIR = Path(tempfile.gettempdir()) / "campaign_schedule_xlsb_work"   # Excel 작업용 짧은 경로 (아래 ⚠ 참조)
-STATUS_FILE   = SOURCE_FOLDER / "_schedule_update_status.txt"            # 마지막 실행 1회분 상태
+STATUS_FILE   = SOURCE_FOLDER / "_schedule_update_status.txt"            # 마지막 실행 블록 + 실행 이력(누적)
+STATUS_LOG_MAX_LINES = 200   # 상태 txt 하단 '실행 이력' 보관 줄 수 (초과분은 오래된 것부터 잘린다)
 
 # ─── 정제 ────────────────────────────────────────────────────
 CAMPAIGN_YEAR         = 2026        # 기간 텍스트 'M/D' 에 붙일 연도
@@ -157,6 +178,18 @@ PERIOD_ALTS  = ("～", "∼", "〜")
 MD_PATTERN   = re.compile(r"^\s*(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*$")   # 'M/D' (. - 구분자도 허용)
 ROW_LEN      = SRC_MAX_COL - SRC_MIN_COL + 1        # 13
 XL_OPENXML_WORKBOOK = 51                            # Excel SaveAs FileFormat (xlsx)
+
+# Excel 팝업 차단용 상수 (아래 _new_excel 참조)
+XL_SECURITY_FORCE_DISABLE = 3                       # msoAutomationSecurityForceDisable — 매크로 보안 경고 차단
+XL_FEATURE_INSTALL_NONE   = 0                       # msoFeatureInstallNone — 기능 설치 프롬프트 대신 오류 반환
+
+# 저장 직후 재검증 재시도 — Excel 이 막 저장하고 핸들을 놓기 전 찰나에 읽으면
+# PermissionError 가 나 '저장이 되돌려짐' 으로 오판된다 (2026-08-20 실측).
+VERIFY_RETRIES  = 3
+VERIFY_WAIT_SEC = 2
+
+# 상태 txt 의 이력 구분선 — 이 줄 **아래**를 이력으로 보고 이어쓴다. 문자열이 바뀌면 이력이 끊긴다.
+STATUS_LOG_HEADER = "── 실행 이력 (최신이 아래) ────────────────"
 
 
 # ── 최신 파일 정렬 키 ────────────────────────────────────────
@@ -318,6 +351,29 @@ def find_summary_layout(ws):
     return header_row, cols
 
 
+def _new_excel():
+    """팝업을 낼 수 있는 경로를 전부 끈 전용 Excel 인스턴스.
+
+    ⚠ `DisplayAlerts=False` 만으로는 부족하다 — 그건 '저장/덮어쓰기 확인' 류만 막고
+      **링크 업데이트·읽기전용 권장·매크로 보안·기능 설치** 프롬프트는 그대로 뜬다.
+      무인(pythonw) 실행에서 모달 창이 뜨면 사람이 닫아줄 때까지 Excel 이 멈춰 서서
+      다음 회차까지 물리고 고아 EXCEL.EXE 가 쌓인다. 그래서 낼 수 있는 창을 전부 끈다.
+
+    ※ DispatchEx = 전용 인스턴스 (이미 떠 있는 Excel 에 붙으면 그쪽이 먼저 종료될 때
+      Quit 단계에서 죽는다 — 아래 두 호출부의 주석 참조).
+    """
+    excel = win32com.client.DispatchEx("Excel.Application")
+    excel.Visible                = False
+    excel.DisplayAlerts          = False   # 저장·덮어쓰기 확인
+    excel.AskToUpdateLinks       = False   # "이 통합 문서에 링크가 있습니다" — DisplayAlerts 로 안 막힌다
+    excel.AlertBeforeOverwriting = False
+    excel.EnableEvents           = False   # 통합 문서 Open 이벤트가 띄우는 창
+    excel.ScreenUpdating         = False
+    excel.AutomationSecurity     = XL_SECURITY_FORCE_DISABLE
+    excel.FeatureInstall         = XL_FEATURE_INSTALL_NONE
+    return excel
+
+
 def _com_convert_to_xlsx(src: Path, dest: Path) -> None:
     """Excel COM 으로 src(xlsb) → dest(xlsx) 변환. 실패 시 예외를 올린다.
 
@@ -328,20 +384,22 @@ def _com_convert_to_xlsx(src: Path, dest: Path) -> None:
       문제로 오인하기 쉽다 (2026-08-20 실측). Excel 공식 한도는 경로+파일명 218자라 Auto 파일(223자)도
       아슬아슬하다 — 캠페인 폴더명이 한 번만 더 길어지면 recalc_and_save 쪽도 같은 이유로 깨진다.
 
-    ※ DispatchEx = 전용 인스턴스 (recalc_and_save 와 같은 이유 — 이미 떠 있는 Excel 에 붙으면
-      그쪽이 먼저 종료될 때 Quit 단계에서 죽는다).
-    ※ ReadOnly=True + UpdateLinks=0 — 사본이라 원본은 어차피 안전하지만, 외부링크 갱신 팝업을 막는다.
+    ※ 인스턴스 설정(팝업 차단)은 _new_excel() 에 모아 뒀다.
     """
     XLSB_WORK_DIR.mkdir(parents=True, exist_ok=True)
     work_src  = XLSB_WORK_DIR / src.name
     work_dest = work_src.with_suffix(".xlsx")
     shutil.copy2(src, work_src)
     try:
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False     # 덮어쓰기 확인 팝업 방지 (스케줄러 실행 대비)
+        excel = _new_excel()
         try:
-            wb_com = excel.Workbooks.Open(str(work_src), UpdateLinks=0, ReadOnly=True)
+            wb_com = excel.Workbooks.Open(
+                str(work_src),
+                UpdateLinks=0,                   # 외부링크 갱신 팝업 방지
+                ReadOnly=True,                   # 사본이라 원본은 어차피 안전
+                IgnoreReadOnlyRecommended=True,  # "읽기 전용으로 여시겠습니까"
+                Notify=False,                    # 잠겨 있으면 '파일 사용 중' 창 대신 com_error
+            )
             try:
                 wb_com.SaveAs(str(work_dest), FileFormat=XL_OPENXML_WORKBOOK)
             finally:
@@ -577,33 +635,75 @@ def target_is_saved(output_file: Path, source_name: str, src_data: list) -> tupl
 
 # ── 실행 상태 기록 ──────────────────────────────────────────
 def write_status(result: str, detail: str = "", rows: int | None = None) -> None:
-    """소스 폴더에 **마지막 실행 1회분** 상태를 남긴다 (사람이 열어 확인하는 용도).
+    """소스 폴더의 상태 txt **한 개**를 갱신 — 상단 '마지막 실행' 블록 + 하단 '실행 이력'(누적).
 
-    스케줄러로 돌면 콘솔 출력이 아무데도 안 남아서, 갱신이 됐는지 SKIP 인지 실패인지 알 방법이
+    스케줄러(pythonw)로 돌면 콘솔 출력이 아무데도 안 남아서, 갱신이 됐는지 SKIP 인지 실패인지 알 방법이
     Auto 파일을 직접 열어보는 것뿐이었다. 그 확인을 파일 하나로 대신한다.
+
+    2026-08-21: 마지막 1회분만 덮어쓰던 것을 **이력 누적**으로 바꿨다 — 팝업 없이 조용히 물러난 회차가
+    쌓이면 '언제부터 실패했는지' 가 보여야 추적이 된다. 파일은 계속 1개다 (이력은 같은 txt 하단).
+
     ※ `.txt` 라 SOURCE_EXTS 에 안 걸려 소스 후보를 오염시키지 않는다.
-    ※ 전역(source_file 등)은 호출 시점에 이미 정해져 있다 — 정의 위치보다 뒤에서만 호출할 것.
+    ※ 전역(source_file 등)이 **아직 안 정해진 시점에도 불릴 수 있다** (sys.excepthook 이 이른 단계의
+      예외에서 호출) → globals().get() 으로 방어적으로 읽고, 없는 항목은 줄을 생략한다.
     """
+    now  = dt.datetime.now()
+    src  = globals().get("source_file")
+    work = globals().get("source_work")
+    out  = globals().get("output_file")
+
     lines = [
-        "이 파일은 update_schedule_summary.py 가 매 실행마다 덮어씁니다 (마지막 실행 1회분).",
+        "이 파일은 update_schedule_summary.py 가 매 실행마다 갱신합니다.",
         "",
-        f"실행 시각 : {dt.datetime.now():%Y-%m-%d %H:%M:%S}",
+        "── 마지막 실행 ────────────────────────────",
+        f"실행 시각 : {now:%Y-%m-%d %H:%M:%S}",
         f"결과      : {result}",
     ]
     if detail:
         lines.append(f"상세      : {detail}")
-    lines.append(f"소스 파일 : {source_file.name}")
-    if source_work is not None and source_work != source_file:
-        mark = "일정 시트 O" if schedule_sheet_ok else "일정 시트 X"
-        lines.append(f"변환본    : {source_work.name} ({mark})")
-    lines.append(f"Auto 파일 : {output_file.name}")
+    if src is not None:
+        lines.append(f"소스 파일 : {src.name}")
+    if work is not None and work != src:
+        mark = "일정 시트 O" if globals().get("schedule_sheet_ok") else "일정 시트 X"
+        lines.append(f"변환본    : {work.name} ({mark})")
+    if out is not None:
+        lines.append(f"Auto 파일 : {out.name}")
     if rows is not None:
         lines.append(f"데이터    : {rows}행")
+
+    # ── 이력: 기존 파일에서 구분선 아래를 회수 → 이번 줄 append → 오래된 것부터 잘라냄
+    history = []
+    try:
+        old = STATUS_FILE.read_text(encoding="utf-8").splitlines()
+        history = [ln for ln in old[old.index(STATUS_LOG_HEADER) + 1:] if ln.strip()]
+    except (OSError, ValueError):
+        pass                                    # 파일 없음 / 구분선 없음(구 포맷) → 이력 새로 시작
+    tail = detail or (f"{rows}행" if rows is not None else "")
+    history.append(f"{now:%Y-%m-%d %H:%M:%S}  {result:<20}  {tail}".rstrip())
+    history = history[-STATUS_LOG_MAX_LINES:]
+
+    lines += ["", STATUS_LOG_HEADER] + history
 
     try:
         STATUS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError as e:
         print(f"[알림] 상태 파일 기록 실패 ({type(e).__name__}: {e})")
+
+
+# ── 마지막 안전망 — 예상 못 한 예외도 창 없이 기록만 남기고 끝낸다 ──
+# pythonw 로 돌면 traceback 은 어차피 어디에도 안 남는다. 상태 txt 이력에 한 줄이라도 남겨야
+# "몇 시에 뭘로 죽었는지" 를 나중에 볼 수 있다.
+def _log_uncaught(exc_type, exc, tb):
+    try:
+        write_status("실패(예외)", f"{exc_type.__name__}: {exc}")
+    except Exception:
+        pass                                    # 기록조차 못 해도 창은 띄우지 않는다
+    if sys.stderr is not None:                  # 콘솔에서 돌릴 땐 traceback 도 보여준다
+        import traceback
+        traceback.print_exception(exc_type, exc, tb)
+
+
+sys.excepthook = _log_uncaught
 
 
 # ── Auto 파일 자동 탐색 ──────────────────────────────────────
@@ -776,13 +876,18 @@ except PermissionError:
 #   (캐시값이 없으면 openpyxl data_only=True 로 읽는 후속 도구가 전부 None 을 본다)
 # ※ DispatchEx = 전용 인스턴스. Dispatch 는 이미 떠 있는 Excel 에 붙어서, 그쪽이 먼저
 #   종료되면 Quit 단계에서 AttributeError 로 죽는다(작업 스케줄러가 실패로 기록).
+#   인스턴스 설정(팝업 차단)은 _new_excel() 참조.
 def recalc_and_save(path: Path) -> None:
     """Excel COM 으로 전체 재계산 후 저장. 실패 시 예외를 올린다."""
-    excel = win32com.client.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False   # Close/Quit 시 저장 확인 팝업 방지 (스케줄러 실행 대비)
+    excel = _new_excel()
     try:
-        wb_com = excel.Workbooks.Open(str(path.resolve()))
+        wb_com = excel.Workbooks.Open(
+            str(path.resolve()),
+            UpdateLinks=0,                   # 링크 갱신 안 함
+            IgnoreReadOnlyRecommended=True,  # "읽기 전용으로 여시겠습니까"
+            Notify=False,                    # ★ 잠겨 있으면 '파일 사용 중' 창 대신 com_error 를 던진다
+                                             #   (기본값 True 면 알림 대화상자를 띄우고 사람을 기다린다)
+        )
         excel.CalculateFull()
         wb_com.Save()
         # ※ gen_py 캐시가 없으면(파이썬 새 버전 설치 직후 등) win32com 이 지연 바인딩으로 동작해
@@ -799,6 +904,29 @@ def recalc_and_save(path: Path) -> None:
             excel.Quit()
         except Exception as e:      # 이미 죽은 인스턴스 등 — 저장 성패는 위에서 판정
             print(f"[알림] Excel 종료 중 무시된 예외: {e}")
+
+
+def is_locked(path: Path) -> bool:
+    """다른 프로세스가 쓰기 잠금 중인가 — Excel 을 띄우기 **전에** 값싸게 확인.
+
+    Notify=False 로 대화상자 대신 오류가 나게 만들어 놨어도, 이미 떠버린 Excel 은
+    닫힐 때까지 메모리를 잡고 있다. 사람이 Auto 파일을 열어둔 흔한 상황에선
+    아예 안 띄우는 게 가장 안전하다 — 20분 뒤 다음 실행이 재시도하면 된다.
+    """
+    try:
+        with open(path, "r+b"):
+            return False
+    except OSError:
+        return True
+
+
+# 잠긴 파일이면 Excel 을 아예 띄우지 않는다 (팝업·고아 EXCEL.EXE 방지).
+# ⚠ 이 시점엔 openpyxl 저장이 이미 끝나 수식 캐시가 빈 상태다 — 그 사실을 상태에 남긴다.
+if is_locked(output_file):
+    print(f"[SKIP] Auto 파일이 잠겨 있어 재계산을 건너뜁니다: {output_file.name}")
+    write_status("실패", "Auto 파일 잠김 — 재계산 미실행(수식 캐시 빈 상태). 다음 실행 시 재시도",
+                 rows=len(data_rows))
+    exit(0)
 
 
 # ※ 재시도 이유: Excel 인스턴스가 재계산 도중 죽으면 이후 호출이
@@ -823,7 +951,14 @@ for attempt in range(1, COM_RETRIES + 1):
 
     # 저장 직후 재검증 — 마커는 여기를 통과했을 때만 기록한다.
     # ※ 저장이 외부(Excel/OneDrive)에 의해 되돌려진 경우를 즉시 드러내기 위한 단계.
-    ok, why = target_is_saved(output_file, source_file.name, src_data)
+    # ※ Excel 이 막 놓은 파일을 곧바로 읽으면 PermissionError 가 난다 — 그건 '되돌려짐' 이
+    #   아니라 단순 타이밍이므로 **읽기 실패 사유일 때만** 잠시 기다렸다 다시 본다.
+    #   값 불일치·잔재는 재시도해도 그대로라 즉시 판정한다.
+    for _ in range(VERIFY_RETRIES):
+        ok, why = target_is_saved(output_file, source_file.name, src_data)
+        if ok or "읽을 수 없음" not in why:
+            break
+        time.sleep(VERIFY_WAIT_SEC)
     if ok:
         LAST_SOURCE_FILE.write_text(current_marker, encoding="utf-8")
         print(f"[완료] {output_file.name} 저장 완료")
