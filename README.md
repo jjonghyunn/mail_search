@@ -1,11 +1,11 @@
 # mail_search  
-<sub>2026-08-19  Jonghyun Park w/ Claude</sub>  
+<sub>2026-10-01  Jonghyun Park w/ Claude</sub>  
 
 Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다운로드하고, 받은 `.msg` 들을 한 개 마크다운 리포트로 요약하는 도구 모음.
 
-> 루트에는 **찾아서 한 번 받아오는** 메일 검색·요약 도구만 둔다.
+> 이 repo 는 **찾아서 한 번 받아오는** 메일 검색·요약 도구만 둔다.
 > 메일함을 **계속 지켜보다 첨부를 받아 워크북까지 반영**하는 무인 자동화는
-> [`schedule_automation/`](schedule_automation/) 하위 폴더에 따로 모았다.
+> [`auto_mailing/schedule_automation/`](https://github.com/jjonghyunn/auto_mailing/tree/main/schedule_automation) 로 옮겼다.
 
 ## 파일 구성
 
@@ -16,7 +16,6 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다�
 | `mail_search_to_msg.md` | 위 스크립트 사용 가이드 |
 | `summarize_msgs.py` | 받은 `.msg` 폴더를 시간순 마크다운 리포트로 요약 — 발신자 TOP / 액션 키워드 통합 / 메일별 본문 미리보기 + 액션 아이템 후보. `extract-msg` 기반, Outlook 설치 불필요 |
 | `summarize_msgs.md` | 위 스크립트 사용 가이드 |
-| `schedule_automation/` | 메일 첨부를 계속 지켜보다 받아서 리포트 워크북에 반영하는 자동화 묶음 — 상세는 [`schedule_automation/README.md`](schedule_automation/README.md) |
 
 ## 빠른 시작
 
