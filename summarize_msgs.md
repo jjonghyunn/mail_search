@@ -1,5 +1,5 @@
 # summarize_msgs.py — .msg 폴더 요약 리포트 생성기  
-<sub>2026-08-19  Jonghyun Park w/ Claude</sub>  
+<sub>2026-10-23  Jonghyun Park w/ Claude</sub>  
 
 `mail_search_to_msg.py` 로 받은 `.msg` 파일들을 한 개의 마크다운 리포트로 정리하는 휴리스틱 기반 요약 도구.
 
@@ -38,12 +38,13 @@ python summarize_msgs.py
 | `SOURCE_DIR` | `C:\Users\user_name\Downloads\mail_search_260511` | 파싱할 `.msg` 폴더 |
 | `OUTPUT_DIR` | `None` | 리포트 저장 위치. `None` 이면 **`SOURCE_DIR` 안**(분석한 `.msg` 들과 같은 폴더)에 저장 — 추천. 별도 경로를 박으면 거기에 저장 |
 | `OUTPUT_BASUB_CME` | `_summary` | 출력 파일명 base (`_summary_YYMMDD_HHMM.md` 형태로 저장). 언더바 prefix 는 파일 매니저에서 영문보다 앞에 정렬돼 **폴더 맨 위로 올라오게** 하려는 의도 |
-| `ACTION_KEYWORDS` | 45개 (한/영 혼합) | 이 키워드가 들어있는 줄을 액션 아이템 후보로 추출 |
+| `ACTION_KEYWORDS` | 46개 (한/영 혼합) | 이 키워드가 들어있는 줄을 액션 아이템 후보로 추출 |
 | `NAME_FRAGMENT_KEYWORDS` | `{"지연"}` | 한국어 사람 이름의 조각으로 흔히 오탐되는 액션 키워드. 이름 안에서 나온 경우 액션으로 안 셈 (예: `김지연` 의 `지연`) |
 | `EXTERNAL_WARNING_SCAN_LINES` | 12 | 본문 앞 몇 줄까지 외부 메일 경고 블록을 찾을지 |
 | `BODY_PREVIEW_LINES` | 25 | 본문 미리보기 최대 줄 수 |
 | `MAX_LINE_LENGTH` | 200 | 너무 긴 한 줄은 잘라서 표시 |
 | `TOP_SENDERS` | 10 | 통계 섹션 발신자 TOP 개수 |
+| `FALLBACK_ENCODING` | `"cp949"` | `.msg` 가 코드페이지를 잘못 표기해(utf-8/euc_kr) 제목·참조·본문 디코드가 실패하면 이 인코딩으로 다시 열어 파싱. 없으면 해당 메일이 `파싱 실패` 로 리포트에서 통째로 빠짐 |
 | `INCLUDE_FULL_BODY` | `False` | True 면 메일별 `<details>` 블록에 본문 전체 포함 (디버그) |
 
 ## 동작 방식 — 본문 정제

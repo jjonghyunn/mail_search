@@ -1,5 +1,5 @@
 # mail_search_to_msg.py 가이드  
-<sub>2026-07-29  Jonghyun Park w/ Claude</sub>  
+<sub>2026-10-23  Jonghyun Park w/ Claude</sub>  
 
 `team_name` 메일함에서 키워드 매칭되는 메일을 `.msg` 파일 **+ 첨부파일**로 다운로드하는 스크립트.
 
@@ -35,9 +35,9 @@ SEARCH_WHOLE_STORE=False → Inbox(받은편함) 또는 FOLDER_NAME 지정 폴�
 msgid:<InternetMessageID> 또는 entry:<EntryID> 가 processed_ids 에 있으면
   → skip (이미 저장된 메일)
     ↓ 신규
-MailItem.SaveAs(path, 3)  # 3 = olMSG
+MailItem.SaveAs(<임시폴더>, 3)  # 3 = olMSG → 최종 경로로 move (MAX_PATH 우회)
     ↓ (옵션) 첨부 저장
-Attachment.SaveAsFile(...) — 인라인 이미지는 SKIP_INLINE_IMAGES 시 제외
+Attachment.SaveAsFile(<임시폴더>) → move — 인라인 이미지는 SKIP_INLINE_IMAGES 시 제외
     ↓
 msgid:/entry: 키를 _processed_entry_ids.txt 에 append
     ↓
@@ -67,6 +67,7 @@ msgid:/entry: 키를 _processed_entry_ids.txt 에 append
 | `WHOLE_WORD` | `True` | True면 단어 경계(`\b`) 매칭 — `"ai"`가 `email`/`available` 안에서 매칭 안 됨. False면 단순 substring (예전 동작) |
 | `SAVE_ATTACHMENTS` | `True` | 매칭 메일의 첨부파일도 같은 폴더에 저장 |
 | `SKIP_INLINE_IMAGES` | `True` | 서명·인라인 이미지(`image001.png` 등 Outlook 자동 생성 이름) 제외 |
+| `MAX_FULL_PATH` | `250` | 저장 파일 **전체 경로** 최대 길이. 넘으면 제목 부분을 잘라 맞춤 (아래 "출력 파일명 규칙" 참고) |
 
 > ⚠️ **짧은 키워드 주의**: 2~3글자 영문 키워드(`ai`, `kv` 등)는 `WHOLE_WORD=True` 권장. False로 두면 `email`, `available`, `again`, `details`, `main` 등 흔한 단어 안에 substring으로 잡혀 과매칭 발생.
 
@@ -138,6 +139,7 @@ SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제
 - `YYMMDD_HHMM` — 메일 수신 시각 (`ReceivedTime`)
 - `safe subject` — Windows 금지문자(`<>:"/\\|?*` + 제어문자) 모두 `_` 로 치환, 길이 150자 제한
 - 첨부 원본명도 동일하게 sanitize (확장자 보존)
+- **전체 경로가 `MAX_FULL_PATH`(250자)를 넘으면 제목 부분을 잘라 맞춤** — 회신이 쌓여 `RE_ RE_ FW_ …` 제목이 길어지면 Windows `MAX_PATH`(260자)를 넘어 `SaveAs` 가 실패하고, 실패한 메일은 마커가 안 남아 매번 재시도·재실패하며 **조용히 수집이 멎는다**. 저장 자체도 임시폴더에 짧은 이름으로 받은 뒤 `\\?\` 긴 경로로 move 하므로 깊은 OneDrive 폴더에서도 안전
 - 동일 파일명 중복 시 `(2)`, `(3)` ... 자동 부여 (.msg + 첨부 모두 같은 seen_names 셋 공유)
 - 메일 + 그 메일의 첨부가 모두 같은 prefix로 시작 → 폴더에서 이름순 정렬 시 자연스럽게 묶임
 
@@ -178,3 +180,4 @@ SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제
 - **2026-07-28** (Jonghyun Park) — dedup 키를 **InternetMessageID(`msgid:`) 우선 / EntryID(`entry:`) fallback / prefix 없는 legacy EntryID 호환** 3단 구조로 확장. EntryID 는 store 마다 달라서, 같은 메일이 여러 메일함에 동시 수신되면 중복 저장되던 문제 해결.
 - **2026-07-28** (Jonghyun Park) — `SEARCH_WHOLE_STORE` 옵션 추가 (기본 False). True 면 store 루트부터 전 폴더를 검색하고 `FOLDER_NAME`/`RECURSE_SUBFOLDERS` 는 무시됨.
 - **2026-07-29** (Jonghyun Park) — **발신자 매칭 추가** — `SENDER_KEYWORDS`(발신자 이름/이메일 대상) + `MATCH_LOGIC`(제목·본문 그룹과 `"OR"`/`"AND"` 결합). "그 사람이 보낸 메일" 검색이 가능해짐. 함께 `RECEIVED_FROM`(받은 날짜 하한, 기본 `None`) 추가. 문서의 설정 표·동작 흐름을 이 3개 상수 기준으로 갱신.
+- **2026-10-23** (Jonghyun Park) — **MAX_PATH 우회** — 임시폴더 `SaveAs` → move, 전체 경로를 `MAX_FULL_PATH`(250) 이내로 제목 자르기. 회신 체인 제목이 길어져 경로가 260자를 넘자 저장이 조용히 실패하던 문제 해결 (`mail_search_to_msg_onlymsg.py` 도 동일 적용).

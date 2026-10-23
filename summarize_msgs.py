@@ -1,5 +1,6 @@
 # summarize_msgs.py
 # 2026-08-19  Jonghyun Park w/ Claude
+# 2026-10-23  Jonghyun Park w/ Claude  — .msg 디코드 실패 시 cp949 로 재시도, 액션 키워드 '공유' 추가
 """
 지정된 폴더의 .msg 파일들을 읽어서 한 개의 마크다운 요약 리포트를 생성한다.
 
@@ -57,7 +58,7 @@ OUTPUT_BASUB_CME = "_summary"
 ACTION_KEYWORDS = [
     # 요청/부탁
     "시면 감사",
-    "요청", "부탁", "공유 부탁", "회신 부탁", "전달 부탁", "확인 부탁",
+    "요청", "부탁", "공유", "공유 부탁", "회신 부탁", "전달 부탁", "확인 부탁",
     "확인 후", "확인해", "확인 바랍", "확인이 필요", "검토 부탁", "제외해",
     "검토 요청", "검토 필요", "반영 부탁", "수정 부탁",
     # 판단/문의
@@ -80,6 +81,10 @@ MAX_LINE_LENGTH = 200
 
 # 발신자 TOP 표시 개수
 TOP_SENDERS = 10
+
+# .msg 가 코드페이지를 잘못 표기해(utf-8/euc_kr) 디코드가 실패할 때 다시 열어볼 인코딩.
+# cp949 는 euc_kr 확장이라 euc_kr 로 못 읽는 한글도 읽는다.
+FALLBACK_ENCODING = "cp949"
 
 # True 면 본문 전체를 리포트에 그대로 포함 (디버그/원문 확인용)
 INCLUDE_FULL_BODY = False
@@ -147,8 +152,16 @@ KOREAN_NAME_RE = re.compile(
 
 
 def parse_msg(path: Path) -> dict:
-    """단일 .msg 파일을 dict 로 파싱."""
-    with extract_msg.openMsg(str(path)) as m:
+    """단일 .msg 파일을 dict 로 파싱. 디코드 실패 시 FALLBACK_ENCODING 으로 다시 연다."""
+    try:
+        return _parse_msg(path, None)
+    except UnicodeDecodeError:
+        return _parse_msg(path, FALLBACK_ENCODING)
+
+
+def _parse_msg(path: Path, encoding: str | None) -> dict:
+    kwargs = {"overrideEncoding": encoding} if encoding else {}
+    with extract_msg.openMsg(str(path), **kwargs) as m:
         # 날짜: msg 메타데이터 우선, 실패하면 파일명 prefix 에서 추출
         sent_at = None
         try:

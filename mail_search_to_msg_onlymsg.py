@@ -2,6 +2,7 @@
 mail_search_to_msg_onlymsg.py
 2026-04-30  Jonghyun Park w/ Claude
 updated: 2026-07-29 19:33  — f-string 내 백슬래시 제거 (Python 3.11 이하 SyntaxError 호환성 수정)
+updated: 2026-10-23  — MAX_PATH 우회: 임시폴더 SaveAs → move + 전체 경로 MAX_FULL_PATH 이내로 제목 자르기
 
 your_mailbox_name 메일함에서 키워드 매칭되는 메일을 .msg + 첨부파일로 다운로드.
 
@@ -29,6 +30,8 @@ your_mailbox_name 메일함에서 키워드 매칭되는 메일을 .msg + 첨부
 """
 
 import re
+import shutil
+import tempfile
 import win32com.client
 from pathlib import Path
 from datetime import datetime, date
@@ -102,6 +105,10 @@ SAVE_ATTACHMENTS = False
 # 서명·인라인 이미지(image001.png 등) 자동 skip? — Outlook 자동 생성 이름 패턴 매칭
 SKIP_INLINE_IMAGES = True
 
+# 저장 파일 전체 경로 최대 길이 — 넘으면 제목 부분을 잘라 맞춘다.
+# Windows MAX_PATH(260) 를 넘으면 SaveAs 가 실패하고, 탐색기·OneDrive 에서도 다루기 어렵다.
+MAX_FULL_PATH = 250
+
 # ── 자동 결정 ───────────────────────────────────────────────────
 TODAY = datetime.now().strftime("%y%m%d")
 SAVE_DIR = Path.home() / r"OneDrive - Company\Project\Campaign\99. Mail"
@@ -124,6 +131,25 @@ def safe_filename(name: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name or "")
     cleaned = cleaned.strip(". ")
     return cleaned[:150] or "no_subject"
+
+
+def fit_name(save_dir: Path, prefix: str, title: str, ext: str) -> str:
+    """'<prefix>_<title><ext>' 의 전체 경로가 MAX_FULL_PATH 를 넘지 않게 title 을 자른다.
+    unique_path 의 ' (N)' suffix 여유 5자를 남긴다."""
+    budget = MAX_FULL_PATH - len(str(save_dir)) - 1 - len(prefix) - 1 - len(ext) - 5
+    title = title[:max(budget, 10)].rstrip(". ")
+    return f"{prefix}_{title}{ext}"
+
+
+def save_via_temp(save_fn, dest: Path) -> None:
+    """MAX_PATH 우회 — 임시폴더에 짧은 이름으로 저장한 뒤 최종 경로로 이동."""
+    tmp_dir = Path(tempfile.mkdtemp())
+    tmp_path = tmp_dir / ("t" + dest.suffix)
+    try:
+        save_fn(str(tmp_path))
+        shutil.move(str(tmp_path), "\\\\?\\" + str(dest.resolve()))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def unique_path(save_dir: Path, base_name: str, seen: set) -> Path:
@@ -400,10 +426,10 @@ def main():
             except Exception:
                 date_prefix = "unknown"
 
-            msg_base = f"{date_prefix}_{safe_filename(subject)}.msg"
+            msg_base = fit_name(SAVE_DIR, date_prefix, safe_filename(subject), ".msg")
             dest = unique_path(SAVE_DIR, msg_base, seen_names)
             try:
-                mail.SaveAs(str(dest), OL_SAVE_AS_MSG)
+                save_via_temp(lambda p: mail.SaveAs(p, OL_SAVE_AS_MSG), dest)
                 print(f"    [저장] {dest.name}")
                 saved += 1
             except Exception as e:
@@ -434,10 +460,12 @@ def main():
                         if att_key in saved_att_originals:
                             skipped_att_dup += 1
                             continue
-                        att_base = f"{date_prefix}_{safe_att}"
+                        att_stem, att_dot, att_ext = safe_att.rpartition(".")
+                        att_base = (fit_name(SAVE_DIR, date_prefix, att_stem, "." + att_ext) if att_dot
+                                    else fit_name(SAVE_DIR, date_prefix, safe_att, ""))
                         att_dest = unique_path(SAVE_DIR, att_base, seen_names)
                         try:
-                            att.SaveAsFile(str(att_dest))
+                            save_via_temp(att.SaveAsFile, att_dest)
                             print(f"      [첨부] {att_dest.name}")
                             saved_atts += 1
                             saved_att_originals.add(att_key)
