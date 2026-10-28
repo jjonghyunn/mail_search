@@ -37,7 +37,7 @@ python summarize_msgs.py
 |---|---|---|
 | `SOURCE_DIR` | `C:\Users\user_name\Downloads\mail_search_260511` | 파싱할 `.msg` 폴더 |
 | `OUTPUT_DIR` | `None` | 리포트 저장 위치. `None` 이면 **`SOURCE_DIR` 안**(분석한 `.msg` 들과 같은 폴더)에 저장 — 추천. 별도 경로를 박으면 거기에 저장 |
-| `OUTPUT_BASUB_CME` | `_summary` | 출력 파일명 base (`_summary_YYMMDD_HHMM.md` 형태로 저장). 언더바 prefix 는 파일 매니저에서 영문보다 앞에 정렬돼 **폴더 맨 위로 올라오게** 하려는 의도 |
+| `OUTPUT_BASENAME` | `_summary` | 출력 파일명 base (`_summary_YYMMDD_HHMM.md` 형태로 저장). 언더바 prefix 는 파일 매니저에서 영문보다 앞에 정렬돼 **폴더 맨 위로 올라오게** 하려는 의도 |
 | `ACTION_KEYWORDS` | 46개 (한/영 혼합) | 이 키워드가 들어있는 줄을 액션 아이템 후보로 추출 |
 | `NAME_FRAGMENT_KEYWORDS` | `{"지연"}` | 한국어 사람 이름의 조각으로 흔히 오탐되는 액션 키워드. 이름 안에서 나온 경우 액션으로 안 셈 (예: `김지연` 의 `지연`) |
 | `CONTEXT_WORDS` | 5 | 액션 줄의 앞 줄 끝 / 뒷 줄 앞에서 가져올 어절(띄어쓰기 단위) 수 |

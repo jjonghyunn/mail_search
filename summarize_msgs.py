@@ -57,7 +57,7 @@ OUTPUT_DIR: Path | None = None
 # 출력 파일명 base (timestamp 자동 추가)
 # Prefix '_' 는 Windows/일반 파일 매니저에서 영문보다 앞에 정렬 → 폴더 맨 위로 올라옴.
 # 다른 prefix 가 좋으면 여기만 바꾸면 됨. (예: "0.summary" / "(00)summary")
-OUTPUT_BASUB_CME = "_summary"
+OUTPUT_BASENAME = "_summary"
 
 # 액션 아이템 키워드 — 줄 안에 포함되면 "후보" 로 추출됨
 ACTION_KEYWORDS = [
@@ -613,9 +613,9 @@ def main() -> int:
     # 새 timestamp 이름으로 rename → 내용만 덮어쓰는 방식.
     # 이렇게 하면 OneDrive/M365 file ID 가 유지돼서 공유 링크가 살아있음.
     timestamp = datetime.now().strftime("%y%m%d_%H%M")
-    out_path = out_dir / f"{OUTPUT_BASUB_CME}_{timestamp}.md"
+    out_path = out_dir / f"{OUTPUT_BASENAME}_{timestamp}.md"
 
-    existing = sorted(out_dir.glob(f"{OUTPUT_BASUB_CME}_*.md"))
+    existing = sorted(out_dir.glob(f"{OUTPUT_BASENAME}_*.md"))
     keeper = existing[-1] if existing else None  # 가장 최근 것 = 유지 대상
 
     # keeper 외 나머지(중복/누적 잔재) 삭제
