@@ -1,6 +1,7 @@
 # summarize_msgs.py
-# 2026-08-19  Jonghyun Park w/ Claude
-# 2026-10-23  Jonghyun Park w/ Claude  — .msg 디코드 실패 시 cp949 로 재시도, 액션 키워드 '공유' 추가
+# 2026-10-28  Jonghyun Park w/ Claude  — 액션 줄에 앞뒤 문맥 첨부 (앞이 인사면 뒤만, 뒤가 번호목록이면 항목 전부)
+# 2026-10-23  Jonghyun Park w/ Claude  — 본문/헤더 디코드 실패(.msg 코드페이지 오표기) 시 cp949 로 재시도, 액션 키워드 '공유' 추가
+# (이전 버전 이력은 git history / GitHub Releases 참조 — 헤더에는 최근 2개 항목만 남긴다)
 """
 지정된 폴더의 .msg 파일들을 읽어서 한 개의 마크다운 요약 리포트를 생성한다.
 
@@ -10,6 +11,10 @@
 
 휴리스틱 방식 (API 호출 없음)
   · 각 메일에서 ACTION_KEYWORDS 가 포함된 줄을 "액션 아이템 후보" 로 추출
+  · 후보 줄에 앞뒤 문맥을 붙임
+      - 뒤에 번호목록(1. 2. 3. …)이 오면 연번이 이어지는 항목 제목 전부 (↳)
+      - 앞 줄이 인사/자기소개(안녕하세요 / {소속} {이름}입니다)면 뒷 줄만 (↓)
+      - 그 외엔 앞 줄 끝 / 뒷 줄 앞 CONTEXT_WORDS 어절 (↑ / ↓)
   · 본문은 forwarded thread 시작 지점에서 자르고 BODY_PREVIEW_LINES 까지만 보여줌
   · 인용(>) 라인 제거 + 빈 줄 정리
 
@@ -72,6 +77,16 @@ ACTION_KEYWORDS = [
     # 결정 필요
     "결정", "협의", "확정", "확정 후", "협의 후",
 ]
+
+# ─── 액션 줄 앞뒤 문맥 ───
+# 일반 케이스에서 앞 줄 끝 / 뒷 줄 앞에서 가져올 어절(띄어쓰기 단위) 수
+CONTEXT_WORDS = 5
+# 뒤에 번호목록이 올 때 가져올 최대 항목 수 (넘으면 '… (+N개)')
+MAX_NUMBERED_ITEMS = 10
+# 앞 줄에 이 말이 있으면 인사로 보고 뒷 문맥만 붙임
+GREETING_KEYWORDS = ["안녕하세요", "안녕하십니까"]
+# 번호목록 수집을 멈추는 맺음말 (이 단어로 시작하는 줄 이후는 서명/thread)
+CLOSING_KEYWORDS = ["감사합니다", "감사드립니다"]
 
 # 본문 미리보기에서 보여줄 최대 줄 수 (forwarded thread 시작점 이전까지)
 BODY_PREVIEW_LINES = 25
@@ -206,6 +221,7 @@ def _skip_external_warning_block(lines: list[str]) -> int:
     )
     if not head_has_warning:
         return 0
+    # 경고/separator/빈줄 만 이어지는 동안 skip → 진짜 본문 line 만나면 거기서 시작
     i = 0
     while i < n:
         s = (lines[i] or "").strip()
@@ -251,23 +267,129 @@ def clean_body_lines(body: str) -> list[str]:
 
 NAME_FRAGMENT_KEYWORDS = {"지연"}  # 이름조각 오매칭 위험 키워드만 이름제거 line 으로 검사
 
+# 번호목록 항목: '1.' '1)' '(1)' '①' (앞 들여쓰기·탭 허용). group(1)=숫자 (원문자는 None)
+NUMBERED_ITEM_RE = re.compile(r"^\s*(?:\(?(\d{1,2})[.)]|[①-⑳])\s*\S")
+CIRCLED_DIGITS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+# 자기소개 줄: '{소속} {이름}입니다.' 처럼 짧고 '입니다' 로 끝남
+SELF_INTRO_RE = re.compile(r"입니다[.!]?\s*$")
+SELF_INTRO_MAX_WORDS = 4
 
-def find_action_lines(body_lines: list[str]) -> list[tuple[str, str]]:
-    """본문 줄 중 ACTION_KEYWORDS 가 포함된 줄을 (keyword, line) tuple 로 반환.
+
+def _item_number(line: str) -> int | None:
+    """번호목록 줄이면 번호(int), 아니면 None."""
+    m = NUMBERED_ITEM_RE.match(line)
+    if not m:
+        return None
+    if m.group(1):
+        return int(m.group(1))
+    return CIRCLED_DIGITS.index(line.strip()[0]) + 1
+
+
+def _prev_nonempty(lines: list[str], i: int) -> int | None:
+    for j in range(i - 1, -1, -1):
+        if lines[j].strip():
+            return j
+    return None
+
+
+def _next_nonempty(lines: list[str], i: int) -> int | None:
+    for j in range(i + 1, len(lines)):
+        if lines[j].strip():
+            return j
+    return None
+
+
+def _is_greeting(lines: list[str], j: int | None) -> bool:
+    """j 줄이 인사(안녕하세요) 또는 인사 직후의 자기소개({소속} {이름}입니다) 인지."""
+    if j is None:
+        return True  # 매칭 줄이 본문 첫 줄 — 앞 문맥 없음
+    s = lines[j].strip()
+    if any(g in s for g in GREETING_KEYWORDS):
+        return True
+    if SELF_INTRO_RE.search(s) and len(s.split()) <= SELF_INTRO_MAX_WORDS:
+        k = _prev_nonempty(lines, j)
+        return k is not None and any(g in lines[k] for g in GREETING_KEYWORDS)
+    return False
+
+
+def _is_closing_only(line: str) -> bool:
+    """'감사합니다.' 처럼 맺음말만 있는 짧은 줄인지."""
+    s = line.strip()
+    return any(s.startswith(c) for c in CLOSING_KEYWORDS) and len(s.split()) <= 2
+
+
+def _numbered_items(lines: list[str], i: int) -> list[str]:
+    """i 줄 바로 뒤가 번호목록 1번이면, 연번(1→2→3…)이 이어지는 항목 줄을 전부 반환.
+    항목 사이의 설명 문단·불릿·표 셀은 건너뛰고 번호 줄만 고른다.
+    맺음말(CLOSING_KEYWORDS) 을 만나거나 다음 번호가 안 나오면 멈춤."""
+    j = _next_nonempty(lines, i)
+    if j is None or _item_number(lines[j]) not in (1,):
+        return []
+    items: list[str] = []
+    expected = 1
+    for line in lines[j:]:
+        s = line.strip()
+        if any(s.startswith(c) for c in CLOSING_KEYWORDS):
+            break
+        if _item_number(line) == expected:
+            items.append(s)
+            expected += 1
+    if len(items) > MAX_NUMBERED_ITEMS:
+        extra = len(items) - MAX_NUMBERED_ITEMS
+        items = items[:MAX_NUMBERED_ITEMS] + [f"… (+{extra}개)"]
+    return items
+
+
+def build_context(lines: list[str], i: int) -> tuple[str, list[str], list[str]]:
+    """매칭 줄 i 의 (모드, 앞 문맥, 뒤 문맥) 반환.
+    모드: 'list'(뒤 번호목록) / 'after'(앞이 인사 → 뒤만) / 'both'(앞뒤 어절)."""
+    items = _numbered_items(lines, i)
+    if items:
+        return "list", [], items
+    p = _prev_nonempty(lines, i)
+    n = _next_nonempty(lines, i)
+    after: list[str] = []
+    # 뒷 줄이 '감사합니다.' 같은 맺음말 한 줄뿐이면 정보가 없으니 붙이지 않음
+    if n is not None and not _is_closing_only(lines[n]):
+        words = lines[n].split()
+        tail = " …" if len(words) > CONTEXT_WORDS else ""
+        after = [" ".join(words[:CONTEXT_WORDS]) + tail]
+    if _is_greeting(lines, p):
+        return "after", [], after
+    words = lines[p].split()
+    head = "… " if len(words) > CONTEXT_WORDS else ""
+    before = [head + " ".join(words[-CONTEXT_WORDS:])]
+    return "both", before, after
+
+
+def format_context(before: list[str], after: list[str], mode: str, indent: str) -> list[str]:
+    """build_context 결과를 마크다운 하위 불릿 줄들로."""
+    out = [f"{indent}- ↑ {b}" for b in before]
+    mark = "↳" if mode == "list" else "↓"
+    out += [f"{indent}- {mark} {a}" for a in after]
+    return out
+
+
+def find_action_lines(body_lines: list[str]) -> list[tuple[str, str, int]]:
+    """본문 줄 중 ACTION_KEYWORDS 가 포함된 줄을 (keyword, line, index) tuple 로 반환.
+    index 는 body_lines 안의 위치 — build_context 로 앞뒤 문맥을 뽑을 때 쓴다.
     한 줄에 여러 키워드 매칭되면 ACTION_KEYWORDS 리스트 순서상 첫 번째만 기록.
 
-    NAME_FRAGMENT_KEYWORDS 만 이름제거 line 으로, 그 외는 원본 line 으로 검사
-    (이름필터 over-strip 으로 '간주'·'문의' 등이 사라지는 문제 방지)."""
-    matched: list[tuple[str, str]] = []
-    for line in body_lines:
+    매칭 검사 시 한국어 사람 이름 패턴(KOREAN_NAME_RE)은 line 에서 임시 제거 후 검사.
+    '김지연' 안의 '지연' 이 액션 키워드로 잘못 매칭되는 false positive 방지."""
+    matched: list[tuple[str, str, int]] = []
+    for idx, line in enumerate(body_lines):
         if not line:
             continue
+        # NAME_FRAGMENT_KEYWORDS 만 이름제거 line 으로 검사 (예: '김지연' 의 '지연' FP 방지).
+        # 나머지는 원본 line — 이름필터가 '간주'(←주)·'문의'(←문) 같은 일반어를
+        # [성씨+1~2글자] 로 잘못 지우는 over-strip 을 피하기 위함.
         scan_line = KOREAN_NAME_RE.sub("", line).lower()
         orig_line = line.lower()
         for kw in ACTION_KEYWORDS:
             target = scan_line if kw in NAME_FRAGMENT_KEYWORDS else orig_line
             if kw.lower() in target:
-                matched.append((kw, line))
+                matched.append((kw, line, idx))
                 break
     return matched
 
@@ -298,13 +420,17 @@ def build_report(msgs: list[dict]) -> str:
     kw_counter: Counter[str] = Counter()
     # all_actions: 통합 섹션용 — {idx, sent_at, sender, subject, kw, line}
     all_actions: list[dict] = []
-    # actions_by_msg: per-email 섹션용 — msg_idx → list of (kw, line)
-    actions_by_msg: dict[int, list[tuple[str, str]]] = {}
+    # actions_by_msg: per-email 섹션용 — msg_idx → list of (kw, line, ctx)
+    #   ctx = (mode, before, after)  ← build_context 결과
+    actions_by_msg: dict[int, list[tuple[str, str, tuple]]] = {}
     for i, m in enumerate(msgs_sorted, 1):
         body_lines = clean_body_lines(m["body"])
-        actions = find_action_lines(body_lines)
+        actions = [
+            (kw, line, build_context(body_lines, li))
+            for kw, line, li in find_action_lines(body_lines)
+        ]
         actions_by_msg[i] = actions
-        for kw, line in actions:
+        for kw, line, ctx in actions:
             kw_counter[kw] += 1
             all_actions.append({
                 "idx": i,
@@ -313,6 +439,7 @@ def build_report(msgs: list[dict]) -> str:
                 "subject": m["subject"],
                 "kw": kw,
                 "line": line,
+                "ctx": ctx,
             })
 
     out: list[str] = []
@@ -377,6 +504,8 @@ def build_report(msgs: list[dict]) -> str:
                     f"- **#{a['idx']:02d}** `{date_str}` "
                     f"{a['sender']} — {a['line']}"
                 )
+                mode, before, after = a["ctx"]
+                out.extend(format_context(before, after, mode, "  "))
             out.append("")
 
     # 타임라인
@@ -406,8 +535,9 @@ def build_report(msgs: list[dict]) -> str:
         if action_lines:
             out.append("**🔑 액션 아이템 후보**")
             out.append("")
-            for kw, line in action_lines:
+            for kw, line, (mode, before, after) in action_lines:
                 out.append(f"  - `{kw}` {line}")
+                out.extend(format_context(before, after, mode, "    "))
             out.append("")
 
         preview = body_lines[:BODY_PREVIEW_LINES]
