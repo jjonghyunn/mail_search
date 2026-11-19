@@ -1,5 +1,5 @@
 # summarize_msgs.py — .msg 폴더 요약 리포트 생성기  
-<sub>2026-10-28  Jonghyun Park w/ Claude</sub>  
+<sub>2026-11-19  Jonghyun Park w/ Claude</sub>  
 
 `mail_search_to_msg.py` 로 받은 `.msg` 파일들을 한 개의 마크다운 리포트로 정리하는 휴리스틱 기반 요약 도구.
 
@@ -46,6 +46,7 @@ python summarize_msgs.py
 | `CLOSING_KEYWORDS` | `["감사합니다", "감사드립니다"]` | 번호목록 수집을 멈추는 맺음말. 뒷 줄이 이 맺음말 한 줄뿐이면 뒷 문맥도 생략 |
 | `EXTERNAL_WARNING_SCAN_LINES` | 12 | 본문 앞 몇 줄까지 외부 메일 경고 블록을 찾을지 |
 | `BODY_PREVIEW_LINES` | 25 | 본문 미리보기 최대 줄 수 |
+| `AUTO_NOTE_MARK` | `"[자동 추가] 보낸 시각"` | 저장 스크립트(`mail_search_to_msg*.py` 의 `ADD_TIME_NOTE`)가 본문 맨 위에 넣은 시각 안내 줄의 앞부분. 원본 메일에 없는 줄이라 본문 미리보기와 액션 추출에서 뺀다. 저장 스크립트의 `TIME_NOTE_MARK` 와 같아야 함 |
 | `MAX_LINE_LENGTH` | 200 | 너무 긴 한 줄은 잘라서 표시 |
 | `TOP_SENDERS` | 10 | 통계 섹션 발신자 TOP 개수 |
 | `FALLBACK_ENCODING` | `"cp949"` | `.msg` 가 코드페이지를 잘못 표기해(utf-8/euc_kr) 제목·참조·본문 디코드가 실패하면 이 인코딩으로 다시 열어 파싱. 없으면 해당 메일이 `파싱 실패` 로 리포트에서 통째로 빠짐 |
@@ -56,6 +57,7 @@ python summarize_msgs.py
 각 메일 본문은 아래 순서로 손질됨:
 
 1. 줄 단위 split (`\r\n`/`\r`/`\n` 통일)
+   - 저장 스크립트가 넣은 **시각 안내 줄**(`AUTO_NOTE_MARK` 로 시작)은 여기서 먼저 뺀다
 2. **외부 메일 경고 블록 skip** — Outlook/Exchange 가 외부 메일 본문 앞에 자동 삽입하는 경고문(`please be cautious` / `external email` / `이 메일은 외부…`)을 본문 앞 `EXTERNAL_WARNING_SCAN_LINES` 줄(기본 12) 안에서 찾아 건너뜀.
    이 경고문은 구분선(`_____`)과 같이 들어와 아래 3번의 절단점으로 **오인되어 본문 전체가 잘리는** 문제가 있어서 먼저 처리한다.
 3. **Forwarded thread 절단점** 만나면 그 이후 버림

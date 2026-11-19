@@ -1,5 +1,5 @@
 # mail_search  
-<sub>2026-10-01  Jonghyun Park w/ Claude</sub>  
+<sub>2026-11-19  Jonghyun Park w/ Claude</sub>  
 
 Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다운로드하고, 받은 `.msg` 들을 한 개 마크다운 리포트로 요약하는 도구 모음.
 
@@ -34,6 +34,7 @@ Outlook 공유 메일함에서 키워드 매칭되는 메일을 `.msg` 로 다�
    - `SEARCH_BODY` — 본문 검색 ON/OFF (대량 메일함이면 OFF 권장)
    - `SAVE_ATTACHMENTS` — 매칭 메일의 첨부파일도 저장
    - `SKIP_INLINE_IMAGES` — 서명·인라인 이미지(`image001.png` 등) 자동 skip
+   - `ADD_TIME_NOTE` - `.msg` 본문 맨 위에 보낸/받은 시각(현지) 안내 줄 추가 (기본 False. 웹 미리보기가 시각을 UTC 로만 보여 줄 때 켠다)
 
 2. 실행:
    ```bash

@@ -1,5 +1,5 @@
 # mail_search_to_msg.py 가이드  
-<sub>2026-10-23  Jonghyun Park w/ Claude</sub>  
+<sub>2026-11-19  Jonghyun Park w/ Claude</sub>  
 
 `team_name` 메일함에서 키워드 매칭되는 메일을 `.msg` 파일 **+ 첨부파일**로 다운로드하는 스크립트.
 
@@ -68,6 +68,9 @@ msgid:/entry: 키를 _processed_entry_ids.txt 에 append
 | `SAVE_ATTACHMENTS` | `True` | 매칭 메일의 첨부파일도 같은 폴더에 저장 |
 | `SKIP_INLINE_IMAGES` | `True` | 서명·인라인 이미지(`image001.png` 등 Outlook 자동 생성 이름) 제외 |
 | `MAX_FULL_PATH` | `250` | 저장 파일 **전체 경로** 최대 길이. 넘으면 제목 부분을 잘라 맞춤 (아래 "출력 파일명 규칙" 참고) |
+| `ADD_TIME_NOTE` | `False` | `.msg` 본문 맨 위에 보낸/받은 시각(이 PC 시간대) 안내 줄을 추가. 웹 미리보기가 시각을 UTC 로만 보여 주는 것을 보완 (아래 "시각 안내 줄" 참고) |
+| `TIME_NOTE_TZ` | `"KST"` | 안내 줄에 적을 시간대 이름. PC 시간대와 맞출 것 |
+| `TIME_NOTE_MARK` / `TIME_NOTE_FMT` | `"[자동 추가] 보낸 시각"` … | 안내 줄 문구. 앞부분(MARK)은 중복 추가 방지에 쓰이고 `summarize_msgs.py` 의 `AUTO_NOTE_MARK` 와 같아야 함 |
 
 > ⚠️ **짧은 키워드 주의**: 2~3글자 영문 키워드(`ai`, `kv` 등)는 `WHOLE_WORD=True` 권장. False로 두면 `email`, `available`, `again`, `details`, `main` 등 흔한 단어 안에 substring으로 잡혀 과매칭 발생.
 
@@ -154,6 +157,23 @@ SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제
 
 ---
 
+## 시각 안내 줄 (`ADD_TIME_NOTE`)
+
+OneDrive/Teams 웹 미리보기는 `.msg` 의 보낸 시각을 UTC 로만 보여 준다. `.msg` 는 시각을 UTC 숫자로 저장하고, 미리보기가 그 숫자에 "UTC" 표기를 붙여 그리기 때문이다. 파일을 고쳐서 이 표기를 바꿀 수는 없어서, 현지 시각을 본문 맨 위에 글자로 적어 두는 옵션이다.
+
+```
+[자동 추가] 보낸 시각 (KST): 2026-11-13 15:19 / 받은 시각 (KST): 2026-11-13 21:58 (원본 메일에 없는 줄, 저장 스크립트가 .msg 저장 시 추가)
+```
+
+- 메일함의 메일은 바꾸지 않는다. 임시 `.msg` 로 저장한 뒤 그 파일을 Outlook 으로 열어 안내 줄을 넣고 다시 저장한다.
+- 원본 메일에 없는 줄이므로 문구에 "자동 추가" 와 "저장 스크립트가 추가" 를 밝혀 둔다.
+- 보낸/받은 시각 속성, 제목, 수발신, 첨부는 그대로다. Outlook 이 다시 저장하면서 텍스트판 본문의 링크 주소 표기(`<https://…>`)와 일부 숨은 헤더 속성은 빠진다 (HTML 본문의 링크는 유지).
+- HTML, 일반 텍스트 메일에만 넣는다. RTF 메일이거나 추가에 실패하면 원본 그대로 저장한다.
+- 시각은 이 PC 시간대 기준이고 `TIME_NOTE_TZ` 는 표기용 이름이다. PC 시간대와 맞게 둘 것.
+- `summarize_msgs.py` 는 이 줄을 본문 미리보기와 액션 추출에서 뺀다 (`AUTO_NOTE_MARK` 가 `TIME_NOTE_MARK` 와 같아야 함).
+
+---
+
 ## 주의사항
 
 | 항목 | 내용 |
@@ -181,3 +201,4 @@ SAVE_DIR 의 기존 파일들에서 `<YYMMDD_HHMM>_` prefix와 `(N)` counter 제
 - **2026-07-28** (Jonghyun Park) — `SEARCH_WHOLE_STORE` 옵션 추가 (기본 False). True 면 store 루트부터 전 폴더를 검색하고 `FOLDER_NAME`/`RECURSE_SUBFOLDERS` 는 무시됨.
 - **2026-07-29** (Jonghyun Park) — **발신자 매칭 추가** — `SENDER_KEYWORDS`(발신자 이름/이메일 대상) + `MATCH_LOGIC`(제목·본문 그룹과 `"OR"`/`"AND"` 결합). "그 사람이 보낸 메일" 검색이 가능해짐. 함께 `RECEIVED_FROM`(받은 날짜 하한, 기본 `None`) 추가. 문서의 설정 표·동작 흐름을 이 3개 상수 기준으로 갱신.
 - **2026-10-23** (Jonghyun Park) — **MAX_PATH 우회** — 임시폴더 `SaveAs` → move, 전체 경로를 `MAX_FULL_PATH`(250) 이내로 제목 자르기. 회신 체인 제목이 길어져 경로가 260자를 넘자 저장이 조용히 실패하던 문제 해결 (`mail_search_to_msg_onlymsg.py` 도 동일 적용).
+- **2026-11-19** (Jonghyun Park) - **시각 안내 줄 추가 옵션** `ADD_TIME_NOTE` (기본 `False`). 웹 미리보기가 `.msg` 보낸 시각을 UTC 로만 보여 줘서, 본문 맨 위에 보낸/받은 시각(현지)을 글자로 적는다. 원본에 없는 줄임을 문구에 밝힘. 메일함 메일은 그대로 (`mail_search_to_msg_onlymsg.py` 도 동일 적용).

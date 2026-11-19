@@ -1,7 +1,7 @@
 # summarize_msgs.py
+# 2026-11-19  Jonghyun Park w/ Claude  - 저장 스크립트가 본문 맨 위에 넣은 시각 안내 줄(AUTO_NOTE_MARK)은 본문 미리보기·액션 추출에서 제외
 # 2026-10-28  Jonghyun Park w/ Claude  — 액션 줄에 앞뒤 문맥 첨부 (앞이 인사면 뒤만, 뒤가 번호목록이면 항목 전부)
-# 2026-10-23  Jonghyun Park w/ Claude  — 본문/헤더 디코드 실패(.msg 코드페이지 오표기) 시 cp949 로 재시도, 액션 키워드 '공유' 추가
-# (이전 버전 이력은 git history / GitHub Releases 참조 — 헤더에는 최근 2개 항목만 남긴다)
+# (이전 버전 이력은 git history / GitHub Releases 참조 - 헤더에는 최근 2개 항목만 남긴다)
 """
 지정된 폴더의 .msg 파일들을 읽어서 한 개의 마크다운 요약 리포트를 생성한다.
 
@@ -90,6 +90,10 @@ CLOSING_KEYWORDS = ["감사합니다", "감사드립니다"]
 
 # 본문 미리보기에서 보여줄 최대 줄 수 (forwarded thread 시작점 이전까지)
 BODY_PREVIEW_LINES = 25
+
+# 저장 스크립트(mail_search_to_msg*.py 의 ADD_TIME_NOTE)가 본문 맨 위에 넣은 시각 안내 줄의 앞부분.
+# 원본 메일에 없는 줄이라 본문 미리보기·액션 추출에서 뺀다. 저장 스크립트의 TIME_NOTE_MARK 와 같아야 한다.
+AUTO_NOTE_MARK = "[자동 추가] 보낸 시각"
 
 # 본문 1줄의 최대 길이 (너무 긴 줄은 잘라서 표시)
 MAX_LINE_LENGTH = 200
@@ -240,6 +244,7 @@ def clean_body_lines(body: str) -> list[str]:
     """본문을 줄 단위로 정제 — 인용·과한 공백·forwarded marker 이후 라인 제거.
     본문 시작의 외부 메일 경고 + separator 블록은 forward marker 검사 전 먼저 skip."""
     lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    lines = [ln for ln in lines if not ln.strip().startswith(AUTO_NOTE_MARK)]
     start = _skip_external_warning_block(lines)
     cleaned: list[str] = []
     for raw in lines[start:]:

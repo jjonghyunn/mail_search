@@ -1,8 +1,9 @@
 """
 mail_search_to_msg_onlymsg.py
 2026-04-30  Jonghyun Park w/ Claude
-updated: 2026-07-29 19:33  — f-string 내 백슬래시 제거 (Python 3.11 이하 SyntaxError 호환성 수정)
+updated: 2026-11-19  - .msg 본문 맨 위에 보낸/받은 시각 안내 줄 추가 옵션 (ADD_TIME_NOTE) - 웹 미리보기가 시각을 UTC 로만 보여 주는 것 보완
 updated: 2026-10-23  — MAX_PATH 우회: 임시폴더 SaveAs → move + 전체 경로 MAX_FULL_PATH 이내로 제목 자르기
+(이전 버전 이력은 git history / GitHub Releases 참조 - 헤더에는 최근 2개 항목만 남긴다)
 
 your_mailbox_name 메일함에서 키워드 매칭되는 메일을 .msg + 첨부파일로 다운로드.
 
@@ -105,6 +106,17 @@ SAVE_ATTACHMENTS = False
 # 서명·인라인 이미지(image001.png 등) 자동 skip? — Outlook 자동 생성 이름 패턴 매칭
 SKIP_INLINE_IMAGES = True
 
+# .msg 본문 맨 위에 "보낸/받은 시각" 안내 줄을 추가? (이 PC 시간대 기준)
+#   OneDrive/Teams 웹 미리보기는 .msg 의 보낸 시각을 UTC 로만 보여 줘서, 현지 시각을 글자로 같이 적어 둔다.
+#   원본 메일에 없는 줄이라 문구에 "자동 추가" 임을 밝힌다. 메일함의 메일은 바꾸지 않고 저장되는 .msg 만 바뀐다.
+#   False 면 원본 그대로 저장. (HTML/일반 텍스트 메일만 적용, RTF 메일은 원본 그대로)
+ADD_TIME_NOTE = False
+TIME_NOTE_TZ = "KST"   # 안내 줄에 적을 시간대 이름 (PC 시간대와 맞출 것)
+# 안내 줄 문구. 앞부분(TIME_NOTE_MARK)은 중복 추가 방지에 쓰이고, summarize_msgs.py 의 AUTO_NOTE_MARK 와 같아야 요약에서 빠진다.
+TIME_NOTE_MARK = "[자동 추가] 보낸 시각"
+TIME_NOTE_FMT = (TIME_NOTE_MARK + " ({tz}): {sent:%Y-%m-%d %H:%M} / 받은 시각 ({tz}): {recv:%Y-%m-%d %H:%M}"
+                 " (원본 메일에 없는 줄, 저장 스크립트가 .msg 저장 시 추가)")
+
 # 저장 파일 전체 경로 최대 길이 — 넘으면 제목 부분을 잘라 맞춘다.
 # Windows MAX_PATH(260) 를 넘으면 SaveAs 가 실패하고, 탐색기·OneDrive 에서도 다루기 어렵다.
 MAX_FULL_PATH = 250
@@ -121,9 +133,63 @@ PROCESSED_MARKER = SAVE_DIR / "_processed_entry_ids.txt"
 OL_FOLDER_INBOX = 6   # GetDefaultFolder
 OL_CLASS_MAIL   = 43  # MailItem
 OL_SAVE_AS_MSG  = 3   # SaveAs Type
+OL_FORMAT_PLAIN = 1   # BodyFormat
+OL_FORMAT_HTML  = 2   # BodyFormat
+OL_DISCARD      = 1   # Close SaveMode
+TIME_NOTE_STYLE = "font-size:10pt;color:#555;margin:0 0 8px 0"   # 안내 줄(HTML) 모양
 
 # Outlook이 자동 생성하는 인라인 이미지 이름 패턴 (서명 등)
 _INLINE_IMG_PAT = re.compile(r'^image\d+\.(png|jpg|jpeg|gif|bmp)$', re.IGNORECASE)
+
+
+def add_time_note(item) -> bool:
+    """열린 .msg 항목의 본문 맨 위에 시각 안내 줄을 넣는다. 넣었으면 True (이미 있거나 RTF 등이면 False)."""
+    sent, recv = item.SentOn, item.ReceivedTime   # pywin32 가 이 PC 시간대 벽시계 값으로 돌려준다
+    if sent.year > 4000 or recv.year > 4000:      # 보낸/받은 시각이 없는 항목 (Outlook 의 '없음' 값)
+        return False
+    note = TIME_NOTE_FMT.format(tz=TIME_NOTE_TZ, sent=sent, recv=recv)
+    fmt = item.BodyFormat
+    if fmt == OL_FORMAT_HTML:
+        html = item.HTMLBody or ""
+        if TIME_NOTE_MARK in html:
+            return False
+        tag = f'<p style="{TIME_NOTE_STYLE}">{note}</p>'
+        m = re.search(r"<body[^>]*>", html, re.IGNORECASE)
+        item.HTMLBody = html[:m.end()] + tag + html[m.end():] if m else tag + html
+        return True
+    if fmt == OL_FORMAT_PLAIN:
+        body = item.Body or ""
+        if TIME_NOTE_MARK in body:
+            return False
+        item.Body = note + "\r\n\r\n" + body
+        return True
+    return False
+
+
+def save_msg(mail, path: str) -> None:
+    """메일을 .msg 로 저장. ADD_TIME_NOTE 면 본문 맨 위에 시각 안내 줄을 넣은 .msg 로 저장한다.
+    메일함의 메일은 건드리지 않는다 (임시 .msg 로 저장 → 그 파일을 열어 고친 뒤 다시 저장).
+    안내 줄 추가가 실패하면 원본 그대로 저장."""
+    if ADD_TIME_NOTE:
+        tmp_dir = Path(tempfile.mkdtemp())
+        item = None
+        try:
+            raw = str(tmp_dir / "o.msg")
+            mail.SaveAs(raw, OL_SAVE_AS_MSG)
+            item = mail.Session.OpenSharedItem(raw)
+            if add_time_note(item):
+                item.SaveAs(path, OL_SAVE_AS_MSG)
+                return
+        except Exception as e:
+            print(f"      [시각 안내 줄 추가 실패 - 원본 그대로 저장] {e}")
+        finally:
+            if item is not None:
+                try:
+                    item.Close(OL_DISCARD)
+                except Exception:
+                    pass
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    mail.SaveAs(path, OL_SAVE_AS_MSG)
 
 
 def safe_filename(name: str) -> str:
@@ -429,7 +495,7 @@ def main():
             msg_base = fit_name(SAVE_DIR, date_prefix, safe_filename(subject), ".msg")
             dest = unique_path(SAVE_DIR, msg_base, seen_names)
             try:
-                save_via_temp(lambda p: mail.SaveAs(p, OL_SAVE_AS_MSG), dest)
+                save_via_temp(lambda p: save_msg(mail, p), dest)
                 print(f"    [저장] {dest.name}")
                 saved += 1
             except Exception as e:
